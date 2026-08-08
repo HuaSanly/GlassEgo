@@ -203,8 +203,7 @@ else
 fi
 
 # --- 补丁 HaMeR vitdet_dataset.py （禁止调试打印）---
-if [ "$SKIP_HAND" != "1" ]; then
-    HAMER_VITDET=$($PYTHON -c "
+HAMER_VITDET=$($PYTHON -c "
 try:
     import hamer.datasets.vitdet_dataset as m
     print(m.__file__)
@@ -212,13 +211,12 @@ except:
     pass
 " 2>/dev/null || echo "")
 
-    if [ -n "$HAMER_VITDET" ] && [ -f "$HAMER_VITDET" ]; then
-        if grep -q "print(f'{downsampling_factor=}')" "$HAMER_VITDET" 2>/dev/null; then
-            info "Patching HaMeR vitdet_dataset.py: commenting out debug print"
-            sed -i "s/print(f'{downsampling_factor=}')/# print(f'{downsampling_factor=}')/" "$HAMER_VITDET"
-        else
-            info "HaMeR vitdet_dataset.py already patched"
-        fi
+if [ -n "$HAMER_VITDET" ] && [ -f "$HAMER_VITDET" ]; then
+    if grep -q "print(f'{downsampling_factor=}')" "$HAMER_VITDET" 2>/dev/null; then
+        info "Patching HaMeR vitdet_dataset.py: removing debug print"
+        sed -i "/print(f'{downsampling_factor=}')/d" "$HAMER_VITDET"
+    else
+        info "HaMeR vitdet_dataset.py already patched"
     fi
 fi
 

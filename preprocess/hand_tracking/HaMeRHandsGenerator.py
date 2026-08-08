@@ -258,7 +258,7 @@ class HaMeRHandsGenerator:
         hands = Hands(data_path=self.data_path)
         dt = 1.0 / self.cam.fps
 
-        for i,cam_data in enumerate(tqdm(self.cam.cam,desc="Hands")):
+        for i,cam_data in enumerate(tqdm(self.cam.cam, desc="Hands", mininterval=1.0)):
             #图像获取
             img = cam_data.img  #rgb
             h_img, w_img = img.shape[:2]

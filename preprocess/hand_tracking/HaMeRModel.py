@@ -14,7 +14,7 @@ HaMeR 3D手部网格恢复器
         - joints_3d：相机空间中的 3D 关节（以米为单位），形状 (21, 3)
 ====================================================================================================
 """
-import os
+from pathlib import Path
 
 
 import numpy as np
@@ -23,24 +23,18 @@ import torch
 from typing import Optional, Tuple
 
 from hamer.models import HAMER
+from hamer.configs import get_config
 from hamer.utils import recursive_to
 from hamer.datasets.vitdet_dataset import ViTDetDataset, DEFAULT_MEAN, DEFAULT_STD
 from hamer.utils.renderer import Renderer, cam_crop_to_full
-from hamer.models import load_hamer
 
 
 class HaMeRModel:
 
     HAMER_AVAILABLE = False
     HAMER_HF_REPO = "Leo-TX/hamer"
-    # MediaPipe hand_landmarker.task (Apache 2.0, (c) Google)
-    # 托管于：https://huggingface.co/Leo-TX/mediapipe-hand
-    MEDIAPIPE_HF_REPO = "Leo-TX/mediapipe-hand"
-    HAMER_CACHE_DIR = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "models",
-        "hamer",
-    )
+    MANO_HF_REPO = "warmshao/WiLoR-mini"
+
     def __init__(self, device: str = "cuda"):
 
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
@@ -48,106 +42,55 @@ class HaMeRModel:
         self.cfg = None
 
         try:
-            # 确保存在检查点 + MANO 文件（如果需要，请从 HF 下载）
-            ckpt_path = self._ensure_hamer_ckpts()
-            self._ensure_mano()
-            self.HAMER_AVAILABLE = True
-            self.model, self.cfg = load_hamer(ckpt_path)
+            assets = self._download_hamer_assets()
+            mano_path = self._download_mano()
+            self.model, self.cfg = self._load_hamer(assets, mano_path)
             self.model = self.model.to(self.device)
             self.model.eval()
+            self.HAMER_AVAILABLE = True
             print(f"[HaMeR] Model loaded on {self.device}")
 
         except Exception as e:
             print(f"[HaMeR] WARNING: Failed to load HaMeR model: {e}")
             self.model = None
-    def _ensure_hamer_ckpts(self) -> str:
-        """
-        确保 HaMeR 检查点和配置文件可用。
-        从 HuggingFace Hub 下载到 ~/.cache/hamer/（如果不存在）。
-        还确保 MANO_RIGHT.pkl 存在（来自 WiLoR 的 HF 存储库）。
 
-        HaMeR 由 UC Regents / Georgios Pavlakos 在 MIT 许可下发布。
-        参见：https://github.com/geopavlakos/hamer
+    @classmethod
+    def _download_hamer_assets(cls) -> dict[str, str]:
+        from huggingface_hub import hf_hub_download
 
-        返回：
-            hamer.ckpt 的路径
-        """
-        cache_dir = self.HAMER_CACHE_DIR
+        filenames = ("hamer.ckpt", "model_config.yaml", "mano_mean_params.npz")
+        return {
+            filename: hf_hub_download(repo_id=cls.HAMER_HF_REPO, filename=filename)
+            for filename in filenames
+        }
 
-        local_ckpt = os.path.join(cache_dir, "hamer_ckpts", "checkpoints", "hamer.ckpt")
-        if os.path.isfile(local_ckpt):
-            # 本地文件存在，确保 MANO 也存在
-            return local_ckpt
+    @classmethod
+    def _download_mano(cls) -> str:
+        from huggingface_hub import hf_hub_download
 
-        # 从 HuggingFace 中心下载
-        try:
-            from huggingface_hub import hf_hub_download
-            print("[HaMeR] Downloading checkpoints from HuggingFace Hub...")
+        return hf_hub_download(
+            repo_id=cls.MANO_HF_REPO,
+            filename="pretrained_models/MANO_RIGHT.pkl",
+        )
 
-            hf_files = {
-                "hamer.ckpt":          os.path.join(cache_dir, "hamer_ckpts", "checkpoints", "hamer.ckpt"),
-                "model_config.yaml":   os.path.join(cache_dir, "hamer_ckpts", "model_config.yaml"),
-                "dataset_config.yaml": os.path.join(cache_dir, "hamer_ckpts", "dataset_config.yaml"),
-                "mano_mean_params.npz": os.path.join(cache_dir, "data", "mano_mean_params.npz"),
-            }
+    @staticmethod
+    def _load_hamer(assets: dict[str, str], mano_path: str):
+        model_cfg = get_config(assets["model_config.yaml"], update_cachedir=False)
+        model_cfg.defrost()
+        model_cfg.MANO.MODEL_PATH = str(Path(mano_path).parent)
+        model_cfg.MANO.MEAN_PARAMS = assets["mano_mean_params.npz"]
 
-            for hf_path, local_path in hf_files.items():
-                if not os.path.isfile(local_path):
-                    os.makedirs(os.path.dirname(local_path), exist_ok=True)
-                    cached = hf_hub_download(repo_id=self.HAMER_HF_REPO, filename=hf_path)
-                    # 从 HF 缓存到预期位置的符号链接
-                    if not os.path.isfile(local_path):
-                        os.symlink(cached, local_path)
-                    print(f"  ✓ {os.path.basename(hf_path)}")
+        if model_cfg.MODEL.BACKBONE.TYPE == "vit" and "BBOX_SHAPE" not in model_cfg.MODEL:
+            assert model_cfg.MODEL.IMAGE_SIZE == 256
+            model_cfg.MODEL.BBOX_SHAPE = [192, 256]
+        if "PRETRAINED_WEIGHTS" in model_cfg.MODEL.BACKBONE:
+            model_cfg.MODEL.BACKBONE.pop("PRETRAINED_WEIGHTS")
+        model_cfg.freeze()
 
-            print("[HaMeR] Checkpoint download complete")
-        except Exception as e:
-            print(f"[HaMeR] WARNING: HuggingFace download failed: {e}")
-            print(f"[HaMeR] Please manually place hamer.ckpt at: {local_ckpt}")
-
-        return local_ckpt
-    def _ensure_mano(self) -> None:
-        """
-        确保 MANO_RIGHT.pkl 存在于 cache_dir/data/mano/. 中
-        Sources (in order): WiLoR的HF缓存→从warmshao/WiLoR-mini.下载
-
-        注意：MANO 许可证禁止重新分发，因此我们从
-        原作者的发行版（WiLoR 将其捆绑在其许可证下）。
-        """
-        cache_dir = self.HAMER_CACHE_DIR
-        mano_dst = os.path.join(cache_dir, "data", "mano", "MANO_RIGHT.pkl")
-        if os.path.isfile(mano_dst):
-            return
-
-        os.makedirs(os.path.dirname(mano_dst), exist_ok=True)
-
-        # 尝试在 WiLoR 的 HuggingFace 缓存中查找它
-        import glob
-        patterns = [
-            os.path.expanduser("~/.cache/huggingface/hub/models--warmshao--WiLoR-mini/snapshots/*/pretrained_models/MANO_RIGHT.pkl"),
-        ]
-        for pat in patterns:
-            matches = glob.glob(pat)
-            if matches:
-                import shutil
-                shutil.copy2(matches[0], mano_dst)
-                print(f"[HaMeR] Copied MANO_RIGHT.pkl from WiLoR cache")
-                return
-
-        # 尝试触发 WiLoR 下载
-        try:
-            from huggingface_hub import hf_hub_download
-            cached = hf_hub_download(
-                repo_id="warmshao/WiLoR-mini",
-                subfolder="pretrained_models",
-                filename="MANO_RIGHT.pkl",
-            )
-            import shutil
-            shutil.copy2(cached, mano_dst)
-            print(f"[HaMeR] Downloaded MANO_RIGHT.pkl via WiLoR's HF repo")
-        except Exception:
-            print(f"[HaMeR] WARNING: MANO_RIGHT.pkl not found at {mano_dst}")
-            print(f"  Please download from https://mano.is.tue.mpg.de/ and place it there.")
+        model = HAMER.load_from_checkpoint(
+            assets["hamer.ckpt"], strict=False, cfg=model_cfg
+        )
+        return model, model_cfg
 
     @property
     def is_available(self) -> bool:

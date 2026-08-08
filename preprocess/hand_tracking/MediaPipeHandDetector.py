@@ -1,7 +1,7 @@
-import os
 import numpy as np
 
 import mediapipe as mp
+from huggingface_hub import hf_hub_download
 
 
 MEDIAPIPE_HF_REPO = "Leo-TX/mediapipe-hand"
@@ -11,25 +11,11 @@ class MediaPipeHandDetector:
     def __init__(self):
         self._mp = mp
 
-        model_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "models", "mediapipe", "hand_landmarker.task"
+        model_path = hf_hub_download(
+            repo_id=MEDIAPIPE_HF_REPO,
+            filename="hand_landmarker.task",
         )
-
-        if not os.path.isfile(model_path):
-            try:
-                from huggingface_hub import hf_hub_download
-                model_path = hf_hub_download(
-                    repo_id=MEDIAPIPE_HF_REPO,
-                    filename="hand_landmarker.task",
-                )
-                print(f"[MediaPipe] Downloaded hand_landmarker.task from HuggingFace Hub")
-            except Exception:
-                raise FileNotFoundError(
-                    f"MediaPipe hand_landmarker.task not found at {model_path}. "
-                    "Download from: https://storage.googleapis.com/mediapipe-models/"
-                    "hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task"
-                )
+        print("[MediaPipe] Loaded hand_landmarker.task from Hugging Face cache")
 
         options = mp.tasks.vision.HandLandmarkerOptions(
             base_options=mp.tasks.BaseOptions(

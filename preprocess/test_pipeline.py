@@ -2,11 +2,22 @@ import os
 import json
 import numpy as np
 import argparse
+import sys
 from pathlib import Path
 from dataclasses import fields, is_dataclass
+
+PREPROCESS_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = PREPROCESS_ROOT.parent
+DEFAULT_META_ROOT = PROJECT_ROOT / "data" / "meta_data"
+DEFAULT_PROCESSED_ROOT = PROJECT_ROOT / "data" / "processed"
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v"}
+POSE_FILENAMES = ("poses.json", "pose.json", "camera_poses.json")
+
+if str(PREPROCESS_ROOT) not in sys.path:
+    sys.path.insert(0, str(PREPROCESS_ROOT))
+
 from data_types.CamTypes import Cam,CamData
 from data_types.HandsTypes import Hands
-from hand_tracking.HaMeRHandsGenerator import HaMeRHandsGenerator
 import cv2
 from tqdm import tqdm
 import imageio
@@ -185,7 +196,7 @@ def create_video_from_frames(frames, save_path, fps=10, export_gif=True, ratio=1
     print(f"Generating Video and GIF (Resolution={w}x{h}, FPS={fps})...")
 
     i = 0
-    for frame in tqdm(frames):
+    for frame in tqdm(frames, desc="Write MP4", mininterval=1.0):
         i+=1
         if is_grayscale:
             frame_bgr = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
@@ -208,6 +219,40 @@ def create_video_from_frames(frames, save_path, fps=10, export_gif=True, ratio=1
         except Exception as e:
             print(f"Failed: {e}")
 
+
+def _find_video_files(sample_dir: Path) -> list[Path]:
+    """Return all video files directly contained in a raw sample directory."""
+    return sorted(
+        path
+        for path in sample_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
+    )
+
+
+def _find_pose_file(sample_dir: Path) -> Path | None:
+    for filename in POSE_FILENAMES:
+        path = sample_dir / filename
+        if path.is_file():
+            return path
+    return None
+
+
+def _write_source_manifest(
+    sample_dir: Path,
+    videos: list[Path],
+    pose_path: Path | None,
+    output_dir: Path,
+) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "sample": sample_dir.name,
+        "source_dir": str(sample_dir),
+        "videos": [str(path) for path in videos],
+        "pose_file": str(pose_path) if pose_path is not None else None,
+    }
+    with (output_dir / "source_manifest.json").open("w", encoding="utf-8") as file:
+        json.dump(manifest, file, ensure_ascii=False, indent=2)
+
 def _run_hamer_hands_legacy(data_path: str, cfg_path: str, cam=None,
                     export_video: bool = False, export_gif: bool = False) -> Hands:
     """
@@ -224,6 +269,8 @@ def _run_hamer_hands_legacy(data_path: str, cfg_path: str, cam=None,
     if cam is None:
         cam = build_cam_from_disk(data_path)
 
+    from hand_tracking.HaMeRHandsGenerator import HaMeRHandsGenerator
+
     gen = HaMeRHandsGenerator(data_path, cfg_path,  cam)
     aria_hands = gen.get_hands_data()
 
@@ -237,7 +284,7 @@ def _run_hamer_hands_legacy(data_path: str, cfg_path: str, cam=None,
         from tqdm import tqdm
         print(f"[HaMeR] Generating visualization video …")
         vis_frames = []
-        for idx in tqdm(range(len(cam.cam)), desc="HaMeR Vis"):
+        for idx in tqdm(range(len(cam.cam)), desc="HaMeR Vis", mininterval=1.0):
             cam_d = cam.cam[idx]
             img = cam_d.img
             if img is None:
@@ -328,18 +375,26 @@ def _draw_hand_overlay(frame_bgr, hand_data, label: str, color) -> None:
     )
 
 
-def run_hamer_hands(data_path: str, cfg_path: str, cam=None,
-                    export_video: bool = False,
-                    export_gif: bool = False) -> Hands:
+def run_hamer_hands(
+    data_path: str,
+    cfg_path: str,
+    cam=None,
+    output_dir: str | Path | None = None,
+    focal_length_px: float | None = None,
+    export_video: bool = True,
+    export_gif: bool = False,
+) -> Hands:
     """Run the complete HaMeR hand pipeline for a video or prebuilt ``Cam``."""
+    from hand_tracking.HaMeRHandsGenerator import HaMeRHandsGenerator
+
     if cam is None:
-        cam = build_cam_from_disk(data_path)
+        cam = build_cam_from_disk(data_path, focal_length_px=focal_length_px)
 
     generator = HaMeRHandsGenerator(data_path, cfg_path, cam)
     hands = generator.get_hands_data()
 
     source = Path(data_path)
-    output_root = Path(__file__).resolve().parent / "localdata"
+    output_root = Path(output_dir) if output_dir is not None else DEFAULT_PROCESSED_ROOT
     output_root.mkdir(parents=True, exist_ok=True)
     output_stem = source.stem if source.stem else "hamer"
     json_path = output_root / f"{output_stem}_hamer_hands.json"
@@ -350,7 +405,9 @@ def run_hamer_hands(data_path: str, cfg_path: str, cam=None,
 
     if export_video and cam.cam:
         vis_frames = []
-        for idx, cam_data in enumerate(tqdm(cam.cam, desc="HaMeR Vis")):
+        for idx, cam_data in enumerate(
+            tqdm(cam.cam, desc="HaMeR Vis", mininterval=1.0)
+        ):
             if cam_data.img is None:
                 continue
 
@@ -386,6 +443,84 @@ def run_hamer_hands(data_path: str, cfg_path: str, cam=None,
     return hands
 
 
+def process_meta_data(
+    meta_root: str | Path = DEFAULT_META_ROOT,
+    processed_root: str | Path = DEFAULT_PROCESSED_ROOT,
+    cfg_path: str = "",
+    export_video: bool = True,
+    export_gif: bool = False,
+    focal_length_px: float | None = None,
+) -> list[dict]:
+    """Batch process every sample folder under ``data/meta_data``."""
+    meta_root = Path(meta_root)
+    processed_root = Path(processed_root)
+    processed_root.mkdir(parents=True, exist_ok=True)
+
+    if not meta_root.is_dir():
+        raise FileNotFoundError(f"meta_root not found: {meta_root}")
+
+    sample_dirs = sorted(path for path in meta_root.iterdir() if path.is_dir())
+    if not sample_dirs:
+        raise FileNotFoundError(f"No sample folders found under {meta_root}")
+
+    summary = []
+    for sample_idx, sample_dir in enumerate(sample_dirs, start=1):
+        print(f"[Batch] Processing {sample_dir.name} ({sample_idx}/{len(sample_dirs)})")
+        videos = _find_video_files(sample_dir)
+        pose_path = _find_pose_file(sample_dir)
+        sample_output = processed_root / sample_dir.name
+        sample_output.mkdir(parents=True, exist_ok=True)
+        _write_source_manifest(sample_dir, videos, pose_path, sample_output)
+
+        if not videos:
+            print(f"[Skip] No videos found in {sample_dir}")
+            summary.append(
+                {
+                    "sample": sample_dir.name,
+                    "status": "skipped",
+                    "reason": "no_videos",
+                    "output_dir": str(sample_output),
+                }
+            )
+            continue
+
+        for video_path in videos:
+            try:
+                run_hamer_hands(
+                    str(video_path),
+                    cfg_path,
+                    output_dir=sample_output,
+                    focal_length_px=focal_length_px,
+                    export_video=export_video,
+                    export_gif=export_gif,
+                )
+                summary.append(
+                    {
+                        "sample": sample_dir.name,
+                        "video": video_path.name,
+                        "status": "ok",
+                        "output_dir": str(sample_output),
+                    }
+                )
+            except Exception as exc:
+                print(f"[Error] Failed to process {video_path}: {exc}")
+                summary.append(
+                    {
+                        "sample": sample_dir.name,
+                        "video": video_path.name,
+                        "status": "failed",
+                        "error": str(exc),
+                        "output_dir": str(sample_output),
+                    }
+                )
+
+    summary_path = processed_root / "batch_summary.json"
+    with summary_path.open("w", encoding="utf-8") as file:
+        json.dump(summary, file, ensure_ascii=False, indent=2)
+    print(f"[Batch] Summary saved to: {summary_path}")
+    return summary
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="HaMeR Hand Mesh Recovery Tracking")
     parser.add_argument(
@@ -393,13 +528,41 @@ if __name__ == "__main__":
         "--data_path",
         dest="video_path",
         type=str,
-        required=True,
-        help="Input MP4 path",
+        default=None,
+        help="Input MP4 path for single-video mode",
     )
     parser.add_argument("--cfg_path", type=str, default="")
-    parser.add_argument("--export_video", action="store_true")
+    parser.add_argument("--meta_root", type=str, default=str(DEFAULT_META_ROOT))
+    parser.add_argument("--processed_root", type=str, default=str(DEFAULT_PROCESSED_ROOT))
+    parser.add_argument("--focal_length_px", type=float, default=None)
+    parser.add_argument(
+        "--export_video",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Export hand tracking visualization MP4 (default: enabled)",
+    )
     parser.add_argument("--export_gif", action="store_true")
     args = parser.parse_args()
-    print(f"[HaMeR] video_path={args.video_path}")
-    run_hamer_hands(args.video_path, args.cfg_path,
-                    export_video=args.export_video, export_gif=args.export_gif)
+
+    if args.video_path:
+        video_path = Path(args.video_path).expanduser()
+        output_dir = Path(args.processed_root) / video_path.parent.name
+        print(f"[HaMeR] video_path={video_path}")
+        run_hamer_hands(
+            str(video_path),
+            args.cfg_path,
+            output_dir=output_dir,
+            focal_length_px=args.focal_length_px,
+            export_video=args.export_video,
+            export_gif=args.export_gif,
+        )
+    else:
+        print(f"[HaMeR] Batch root={args.meta_root}")
+        process_meta_data(
+            meta_root=args.meta_root,
+            processed_root=args.processed_root,
+            cfg_path=args.cfg_path,
+            export_video=args.export_video,
+            export_gif=args.export_gif,
+            focal_length_px=args.focal_length_px,
+        )
