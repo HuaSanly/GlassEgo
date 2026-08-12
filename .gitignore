@@ -1,4 +1,11 @@
+# Local editor and environment
 .vscode/
+.env
+
+# Runtime data and model assets
 data/
 models/
+
+# Python bytecode and caches
 __pycache__/
+*.py[cod]

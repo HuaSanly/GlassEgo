@@ -1,0 +1,3 @@
+camera:
+  fallback:
+    focal_length_px: null

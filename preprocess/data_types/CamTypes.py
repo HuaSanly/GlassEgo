@@ -14,7 +14,7 @@ class CamData:
     属性：
         idx (int): 序列内的全局帧索引。
         ts (int): 更正了捕获时间戳（以纳秒为单位）。
-        img (np.ndarray): BGR 格式的已处理图像数组（H、W、3）。
+        img (np.ndarray): RGB 格式的已处理图像数组（H、W、3）。
         fov (float): 垂直视野（以度为单位）。
         h (int): 图像高度（以像素为单位）。
         w (int): 图像宽度（以像素为单位）。
@@ -66,7 +66,7 @@ class Cam:
     d: np.ndarray = None
     c2d: np.ndarray = None
 
-    mps_path: str = None
+    data_path: str = None
 
 
     def __len__(self) -> int:
@@ -97,13 +97,15 @@ class Cam:
         """
         for idx in range(len(self.tss)):
             # 为特定框架定义目录
-            frame_dir = os.path.join(self.mps_path, "preprocess", "all_data", f"{idx:05d}")
+            frame_dir = os.path.join(self.data_path, "preprocess", "all_data", f"{idx:05d}")
             os.makedirs(frame_dir, exist_ok=True)
             img_path = os.path.join(frame_dir, f"{label}.png")
 
             cam = self.cam[idx]
             # 保存处理后的图像
-            cv2.imwrite(img_path, cam.img)
+            img_bgr = cv2.cvtColor(cam.img, cv2.COLOR_RGB2BGR)
+            if not cv2.imwrite(img_path, img_bgr):
+                raise IOError(f"Failed to save camera frame: {img_path}")
 
             # 编译每帧元数据
             json_data = {
@@ -136,7 +138,7 @@ class Cam:
         参数：
             label (str): 相机流的标识符。
         """
-        save_path = os.path.join(self.mps_path, "preprocess", f"aria_cam_{label}_config.json")
+        save_path = os.path.join(self.data_path, "preprocess", f"aria_cam_{label}_config.json")
         summary_data = {
             "total_frames": len(self),
             "fps": self.fps,

@@ -1,0 +1,13 @@
+runtime:
+  device: cuda
+
+paths:
+  data_root: data
+
+output:
+  export_json: true
+  json_filename: hamer_hands.json
+  export_video: true
+  video_filename: hamer_hands_vis.mp4
+  export_gif: false
+  gif_frame_ratio: 10

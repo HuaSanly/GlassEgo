@@ -1,3 +1,5 @@
+import os
+import json
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional, Dict, List, Any,Literal
@@ -28,13 +30,14 @@ class MidpointFrameBuilder:
         self.eps_y = float(eps_y)
         self.use_sign_consistency = bool(use_sign_consistency)
 
-
+    #标准化，即把向量归一化成单位向量，只保留了方向
     def _safe_normalize(self, v: np.ndarray) -> Optional[np.ndarray]:
         """使用 epsilon 检查标准化向量以避免被零除。"""
-        n = float(np.linalg.norm(v))
+        n = float(np.linalg.norm(v)) #模长
+        #安全性处理，防止向量为零向量，导致除以零的情况
         if n < self.eps_norm:
             return None
-        return v / n
+        return v / n    #长度除以模
 
 
     @staticmethod
@@ -62,7 +65,7 @@ class MidpointFrameBuilder:
         """
         # x = thumb_base -> index_base（避免指尖接触时出现奇异性）
         x_raw = index_base_w - thumb_base_w
-        x = self._safe_normalize(x_raw)
+        x = self._safe_normalize(x_raw) #x轴定义为拇指根指向食指根的方向
         if x is None:
             return prev_R
 
@@ -74,26 +77,26 @@ class MidpointFrameBuilder:
 
         y_raw = arm
         # 格拉姆-施密特投影
-        y_proj = y_raw - float(np.dot(y_raw, x)) * x
+        y_proj = y_raw - float(np.dot(y_raw, x)) * x  #施密特正交化的公式，x的模是1所以不用除
         y = self._safe_normalize(y_proj)
         if y is None:
             return prev_R
 
-        z = self._safe_normalize(np.cross(x, y))
+        z = self._safe_normalize(np.cross(x, y)) #z轴由xy叉积得到
         if z is None:
             return prev_R
 
-        y = self._safe_normalize(np.cross(z, x))
+        y = self._safe_normalize(np.cross(z, x)) #再次叉积得到绝对垂直，前面计算的y可能因为浮点数的问题存在小误差
         if y is None:
             return prev_R
 
         # 标志一致性：防止180°翻转
         if self.use_sign_consistency and prev_R is not None:
-            if float(np.dot(prev_R[:, 0], x)) < 0.0:
+            if float(np.dot(prev_R[:, 0], x)) < 0.0:  #若上帧x和这帧x的点积小于零，说明夹角大于90度，发生了翻转，需纠正回来
                 x, y = -x, -y
                 z = np.cross(x, y)
 
-        return np.column_stack([x, y, z])
+        return np.column_stack([x, y, z]) #拼成旋转矩阵
 
 @dataclass
 class HandsJointAngles:
@@ -227,7 +230,7 @@ class HandsData:
 class Hands:
     tss: List[int] = field(default_factory=list)
     hands: List[HandsData] = field(default_factory=list)
-    data_path: str = None
+    mps_path: str = None
 
 
     def __len__(self) -> int:
@@ -242,14 +245,107 @@ class Hands:
             return float(arr) if isinstance(arr, np.floating) else int(arr)
         return arr
 
-    
-class HandDetection:
-    bbox: NDArray[np.float32]             # (4,)，[x1, y1, x2, y2]
-    label: Literal["Left", "Right"]
-    confidence: float
-    landmarks_2d: NDArray[np.float32]     # (21, 2)，像素坐标 [x, y]
-    world_landmarks: NDArray[np.float32]  # (21, 3)，世界坐标 [x, y, z]
 
-    @property
-    def is_right_int(self) -> int:
-        return int(self.label == "Right")
+    def save_aria_hands_json(self) -> None:
+        """将所有手部跟踪状态序列化到单独的帧 JSON 文件中。"""
+        for i in range(len(self.tss)):
+            frame_dir = os.path.join(self.mps_path, "preprocess", "all_data", f"{i:05d}")
+            os.makedirs(frame_dir, exist_ok=True)
+            data = self.hands[i]
+
+            def pack_hand(h: Optional[HandData]):
+                if h is None: return None
+                # *** 保留原始代码中的所有 31 个字段 ***
+                return {
+                    "d2c": self._safe_list(h.d2c),
+                    "c2w": self._safe_list(h.c2w),
+                    "confidence": h.confidence,
+                    "grasp_state": h.grasp_state,
+                    "wrist_pose": self._safe_list(h.wrist_pose),
+                    "palm_pose": self._safe_list(h.palm_pose),
+                    "kpts_3d": self._safe_list(h.hand_keypoints_3d),
+                    "kpts_2d": self._safe_list(h.hand_keypoints_2d),
+                    "joint_angles": h.joint_angles.data if h.joint_angles else {},
+                    "wrist_pose_raw_world": self._safe_list(h.wrist_pose_raw_world),
+                    "wrist_pose_opt_world": self._safe_list(h.wrist_pose_opt_world),
+                    "wrist_lin_vel_raw_world": self._safe_list(h.wrist_lin_vel_raw_world),
+                    "wrist_ang_vel_raw_world": self._safe_list(h.wrist_ang_vel_raw_world),
+                    "wrist_lin_vel_opt_world": self._safe_list(h.wrist_lin_vel_opt_world),
+                    "wrist_ang_vel_opt_world": self._safe_list(h.wrist_ang_vel_opt_world),
+                    "index_translation_raw_world": self._safe_list(h.index_translation_raw_world),
+                    "index_translation_opt_world": self._safe_list(h.index_translation_opt_world),
+                    "thumb_translation_raw_world": self._safe_list(h.thumb_translation_raw_world),
+                    "thumb_translation_opt_world": self._safe_list(h.thumb_translation_opt_world),
+                    "midpoint_pose_raw_world": self._safe_list(h.midpoint_pose_raw_world),
+                    "midpoint_pose_opt_world": self._safe_list(h.midpoint_pose_opt_world),
+                    "midpoint_translation_raw_world": self._safe_list(h.midpoint_translation_raw_world),
+                    "midpoint_orientation_raw_world": self._safe_list(h.midpoint_orientation_raw_world),
+                    "midpoint_translation_opt_world": self._safe_list(h.midpoint_translation_opt_world),
+                    "midpoint_orientation_opt_world": self._safe_list(h.midpoint_orientation_opt_world),
+                    "midpoint_lin_vel_raw_world": self._safe_list(h.midpoint_lin_vel_raw_world),
+                    "midpoint_ang_vel_raw_world": self._safe_list(h.midpoint_ang_vel_raw_world),
+                    "midpoint_lin_vel_opt_world": self._safe_list(h.midpoint_lin_vel_opt_world),
+                    "midpoint_ang_vel_opt_world": self._safe_list(h.midpoint_ang_vel_opt_world),
+                    "distance_midpoint2wrist_raw_world": h.distance_midpoint2wrist_raw_world,
+                    "distance_midpoint2wrist_opt_world": h.distance_midpoint2wrist_opt_world
+                }
+
+            json_data = {"idx": data.idx, "ts": data.ts, "hand_r": pack_hand(data.hand_r), "hand_l": pack_hand(data.hand_l)}
+            with open(os.path.join(frame_dir, "aria_hands.json"), 'w') as f:
+                json.dump(json_data, f, indent=4)
+
+
+    def save_hands_json(self, filename: str = "aria_hands.json") -> None:
+        """
+        通用序列化器：将手部跟踪数据保存到每帧 JSON 文件中
+        具有自定义文件名。这允许不同的手部检测方法
+        (MediaPipe、WiLoR、HaMeR) 以相同的格式保存结果
+        但在不同的文件名下（例如，'mediapipe_hands.json'）。
+        """
+        for i in range(len(self.tss)):
+            frame_dir = os.path.join(self.mps_path, "preprocess", "all_data", f"{i:05d}")
+            os.makedirs(frame_dir, exist_ok=True)
+            data = self.hands[i]
+
+            sl = self._safe_list
+
+            def pack_hand(h: Optional[HandData]):
+                if h is None: return None
+                return {
+                    "d2c": sl(h.d2c),
+                    "c2w": sl(h.c2w),
+                    "confidence": sl(h.confidence),
+                    "grasp_state": sl(h.grasp_state),
+                    "wrist_pose": sl(h.wrist_pose),
+                    "palm_pose": sl(h.palm_pose),
+                    "kpts_3d": sl(h.hand_keypoints_3d),
+                    "kpts_2d": sl(h.hand_keypoints_2d),
+                    "joint_angles": {k: sl(v) for k, v in (h.joint_angles.data if h.joint_angles else {}).items()},
+                    "wrist_pose_raw_world": sl(h.wrist_pose_raw_world),
+                    "wrist_pose_opt_world": sl(h.wrist_pose_opt_world),
+                    "wrist_lin_vel_raw_world": sl(h.wrist_lin_vel_raw_world),
+                    "wrist_ang_vel_raw_world": sl(h.wrist_ang_vel_raw_world),
+                    "wrist_lin_vel_opt_world": sl(h.wrist_lin_vel_opt_world),
+                    "wrist_ang_vel_opt_world": sl(h.wrist_ang_vel_opt_world),
+                    "index_translation_raw_world": sl(h.index_translation_raw_world),
+                    "index_translation_opt_world": sl(h.index_translation_opt_world),
+                    "thumb_translation_raw_world": sl(h.thumb_translation_raw_world),
+                    "thumb_translation_opt_world": sl(h.thumb_translation_opt_world),
+                    "midpoint_pose_raw_world": sl(h.midpoint_pose_raw_world),
+                    "midpoint_pose_opt_world": sl(h.midpoint_pose_opt_world),
+                    "midpoint_translation_raw_world": sl(h.midpoint_translation_raw_world),
+                    "midpoint_orientation_raw_world": sl(h.midpoint_orientation_raw_world),
+                    "midpoint_translation_opt_world": sl(h.midpoint_translation_opt_world),
+                    "midpoint_orientation_opt_world": sl(h.midpoint_orientation_opt_world),
+                    "midpoint_lin_vel_raw_world": sl(h.midpoint_lin_vel_raw_world),
+                    "midpoint_ang_vel_raw_world": sl(h.midpoint_ang_vel_raw_world),
+                    "midpoint_lin_vel_opt_world": sl(h.midpoint_lin_vel_opt_world),
+                    "midpoint_ang_vel_opt_world": sl(h.midpoint_ang_vel_opt_world),
+                    "distance_midpoint2wrist_raw_world": sl(h.distance_midpoint2wrist_raw_world),
+                    "distance_midpoint2wrist_opt_world": sl(h.distance_midpoint2wrist_opt_world)
+                }
+
+            json_data = {"idx": data.idx, "ts": sl(data.ts), "hand_r": pack_hand(data.hand_r), "hand_l": pack_hand(data.hand_l)}
+            with open(os.path.join(frame_dir, filename), 'w') as f:
+                json.dump(json_data, f, indent=4)
+
