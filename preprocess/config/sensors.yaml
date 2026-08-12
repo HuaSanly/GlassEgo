@@ -1,3 +1,8 @@
 camera:
   fallback:
     focal_length_px: null
+
+vio:
+  basalt:
+    executable: basalt_vio
+    timeout_seconds: 600
