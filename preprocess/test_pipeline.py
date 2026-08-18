@@ -19,6 +19,7 @@ if str(PREPROCESS_ROOT) not in sys.path:
 
 from utils.utils_media import build_cam_from_disk
 from utils.utils_math import time_it
+from data_types.VIOTypes import VIOResult
 
 @dataclass(frozen=True)
 class ProcessUnit:
@@ -40,13 +41,32 @@ class PreprocessPipeline:
         self.pending_units = self._load_pending_units()
     def run(self):
         for unit in self.pending_units:
-            self.process_hands(unit)
+            vio_result = self.process_vio(unit)
+            self.process_hands(unit, vio_result)
+
+    @time_it
+    def process_vio(self, unit: ProcessUnit, force: bool = False) -> VIOResult:
+        """Process exactly one VIO unit and return aligned camera poses."""
+        if not isinstance(unit, ProcessUnit):
+            raise TypeError("unit must be a ProcessUnit")
+        if not self.cfg.vio.enabled:
+            raise RuntimeError("VIO is required before hand preprocessing")
+
+        from vio.BasaltVIOGenerator import BasaltVIOGenerator
+
+        generator = BasaltVIOGenerator(
+            unit_dir=unit.unit_dir,
+            cfg=self.cfg.vio,
+        )
+        return generator.get_camera_poses(force=force)
         
     @time_it
-    def process_hands(self, unit: ProcessUnit) -> dict:
+    def process_hands(self, unit: ProcessUnit, vio_result: VIOResult) -> dict:
         """Process exactly one video and return lightweight result metadata."""
         if not isinstance(unit, ProcessUnit):
             raise TypeError("unit must be a ProcessUnit")
+        if not isinstance(vio_result, VIOResult):
+            raise TypeError("vio_result must be a VIOResult")
         if not unit.video_path.is_file():
             raise FileNotFoundError(f"Video not found: {unit.video_path}")
         if unit.video_path.suffix.lower() not in VIDEO_EXTENSIONS:
@@ -56,14 +76,9 @@ class PreprocessPipeline:
 
         from hand_tracking.HaMeRHandsGenerator import HaMeRHandsGenerator
 
-        focal_length_px = OmegaConf.select(
-            self.cfg,
-            "sensors.camera.fallback.focal_length_px",
-            default=None,
-        )
         cam = build_cam_from_disk(
             str(unit.video_path),
-            focal_length_px=focal_length_px,
+            vio_result=vio_result,
         )
         generator = HaMeRHandsGenerator(
             unit_dir=unit.unit_dir,
@@ -158,13 +173,14 @@ class PreprocessPipeline:
     def _load_preprocess_config(
         config_root: str | Path = DEFAULT_CONFIG_ROOT,
     ) -> DictConfig:
-        """Load the global, sensor, and hand-tracking preprocess configs."""
+        """Load global and module-specific preprocess configs."""
         config_root = Path(config_root)
         default_path = config_root / "default.yaml"
         config_paths = {
             "default": default_path,
             "sensors": config_root / "sensors.yaml",
             "hand_tracking": config_root / "hand_tracking.yaml",
+            "vio": config_root / "vio.yaml",
         }
         missing = [str(path) for path in config_paths.values() if not path.is_file()]
         if missing:
@@ -180,6 +196,7 @@ class PreprocessPipeline:
             load_yaml(config_paths["default"]),
             {"sensors": load_yaml(config_paths["sensors"])},
             {"hand_tracking": load_yaml(config_paths["hand_tracking"])},
+            {"vio": load_yaml(config_paths["vio"])},
         )
         OmegaConf.resolve(cfg)
         return cfg

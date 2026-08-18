@@ -1,0 +1,8 @@
+enabled: true
+reuse_existing: true
+min_pose_coverage: 0.9
+max_interpolation_gap_ms: 100
+
+basalt:
+  executable: basalt_vio
+  timeout_seconds: 600

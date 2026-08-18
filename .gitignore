@@ -9,3 +9,9 @@ models/
 # Python bytecode and caches
 __pycache__/
 *.py[cod]
+
+# Rokid Glass3 calibration outputs
+datacollection/rokidglass3/calibration/board/*
+!datacollection/rokidglass3/calibration/board/.gitkeep
+datacollection/rokidglass3/calibration/report/*
+!datacollection/rokidglass3/calibration/report/.gitkeep

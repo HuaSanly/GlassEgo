@@ -24,7 +24,7 @@ scikit-image>=0.21
 pandas>=2.0
 
 # ── 计算机视觉 ──
-opencv-python>=4.8
+opencv-contrib-python>=4.8
 pillow>=10.0
 open3d>=0.18
 imageio>=2.30
@@ -79,6 +79,7 @@ python-dotenv>=1.0
 requests>=2.31
 safetensors>=0.4
 rosbags>=0.11
+allantools>=2024.6
 
 # ── 可视化 ──
 matplotlib>=3.7

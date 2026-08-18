@@ -172,6 +172,18 @@ else
     info "[5/7] Hand tracking packages installed"
 fi
 
+# 部分第三方包把 opencv-python 写成硬依赖，可能与 contrib wheel 同时安装。
+# 所有依赖安装完成后统一保留 contrib，确保 ChArUco API 来源唯一。
+if $PIP list --format=freeze 2>/dev/null | grep -Eq \
+    '^opencv-(python|python-headless|contrib-python-headless)=='; then
+    info "Normalizing OpenCV installation to opencv-contrib-python..."
+    $PIP uninstall -y \
+        opencv-python \
+        opencv-python-headless \
+        opencv-contrib-python-headless
+    $PIP install --force-reinstall --no-deps "opencv-contrib-python>=4.8"
+fi
+
 # ==============================================================================
 # [6/7] 补丁
 # ==============================================================================
@@ -246,7 +258,7 @@ check_import "torch (CUDA)"          "import torch; assert torch.cuda.is_availab
 check_import "torchvision"           "import torchvision"
 check_import "numpy"                 "import numpy"
 check_import "scipy"                 "import scipy"
-check_import "opencv"                "import cv2"
+check_import "opencv + ChArUco"      "import cv2; assert hasattr(cv2.aruco, 'CharucoDetector')"
 check_import "open3d"                "import open3d"
 check_import "PIL"                   "from PIL import Image"
 
@@ -278,6 +290,7 @@ check_import "wandb"                 "import wandb"
 check_import "gradio"                "import gradio"
 check_import "rich"                  "import rich"
 check_import "pydantic"              "import pydantic"
+check_import "allantools"            "import allantools"
 
 echo ""
 info "=== 3D / Pose ==="

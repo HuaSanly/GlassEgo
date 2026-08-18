@@ -5,16 +5,18 @@ import numpy as np
 from pathlib import Path
 import imageio
 from preprocess.data_types.CamTypes import Cam, CamData
+from preprocess.data_types.VIOTypes import VIOResult
 
 def build_cam_from_disk(
     video_path: str,
     focal_length_px: float | None = None,
+    vio_result: VIOResult | None = None,
 ) -> Cam:
     """Read an MP4 into the Cam container expected by HaMeRHandsGenerator.
 
-    Since a normal video does not contain camera calibration or poses, this
-    uses an approximate pinhole intrinsic matrix and identity camera poses.
-    Images are stored as RGB and timestamps use nanoseconds.
+    VIO results provide calibrated intrinsics, aligned nanosecond timestamps,
+    and camera poses. Without VIO, the existing focal-length and identity-pose
+    fallback is retained. Images are always stored as RGB.
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -30,23 +32,46 @@ def build_cam_from_disk(
         cap.release()
         raise ValueError(f"Invalid video dimensions: {width}x{height}")
 
-    focal = float(focal_length_px or max(width, height))
-    k = np.array(
-        [
-            [focal, 0.0, width / 2.0],
-            [0.0, focal, height / 2.0],
-            [0.0, 0.0, 1.0],
-        ],
-        dtype=np.float32,
-    )
-    c2w = np.eye(4, dtype=np.float32)
-    c2d = np.eye(4, dtype=np.float32)
-    d2w = np.eye(4, dtype=np.float32)
-    distortion = np.zeros(8, dtype=np.float32)
+    if vio_result is None:
+        focal = float(focal_length_px or max(width, height))
+        k = np.array(
+            [
+                [focal, 0.0, width / 2.0],
+                [0.0, focal, height / 2.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+        c2d = np.eye(4, dtype=np.float32)
+        distortion = np.zeros(8, dtype=np.float32)
+        trajectory_frames = None
+        first_ts = 0
+        fov = 0.0
+    else:
+        calibration = vio_result.calibration
+        if (width, height) != calibration.resolution:
+            cap.release()
+            raise ValueError(
+                "Video resolution does not match VIO calibration: "
+                f"video={width}x{height}, "
+                f"calibration={calibration.resolution[0]}x"
+                f"{calibration.resolution[1]}"
+            )
+        fx, fy, cx, cy = calibration.intrinsics
+        k = np.array(
+            [[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]],
+            dtype=np.float32,
+        )
+        c2d = calibration.T_imu_camera.astype(np.float32)
+        distortion = calibration.distortion.astype(np.float32)
+        trajectory_frames = vio_result.trajectory.frames
+        first_ts = trajectory_frames[0].timestamp_ns
+        fov = float(np.degrees(2.0 * np.arctan(height / (2.0 * fy))))
 
     cam = Cam(
         fps=fps,
-        first_ts=0,
+        first_ts=first_ts,
+        fov=fov,
         h=height,
         w=width,
         k=k,
@@ -63,11 +88,31 @@ def build_cam_from_disk(
                 break
 
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            timestamp_ns = int(round(frame_idx * 1_000_000_000 / fps))
+            if trajectory_frames is None:
+                timestamp_ns = int(round(frame_idx * 1_000_000_000 / fps))
+                c2w = np.eye(4, dtype=np.float32)
+                d2w = np.eye(4, dtype=np.float32)
+            else:
+                if frame_idx >= len(trajectory_frames):
+                    raise ValueError(
+                        "Video contains more frames than the VIO trajectory"
+                    )
+                pose = trajectory_frames[frame_idx]
+                if pose.frame_idx != frame_idx:
+                    raise ValueError(
+                        "VIO frame indices are not aligned with the video: "
+                        f"expected={frame_idx}, actual={pose.frame_idx}"
+                    )
+                timestamp_ns = pose.timestamp_ns
+                c2w = pose.c2w.astype(np.float32)
+                d2w = (
+                    pose.c2w @ vio_result.calibration.T_cam_imu
+                ).astype(np.float32)
             frame = CamData(
                 idx=frame_idx,
                 ts=timestamp_ns,
                 img=frame_rgb,
+                fov=fov,
                 h=height,
                 w=width,
                 k=k.copy(),
@@ -84,6 +129,11 @@ def build_cam_from_disk(
 
     if not cam.cam:
         raise ValueError(f"Video contains no readable frames: {video_path}")
+    if trajectory_frames is not None and len(cam.cam) != len(trajectory_frames):
+        raise ValueError(
+            "Video frame count does not match the VIO trajectory: "
+            f"video={len(cam.cam)}, trajectory={len(trajectory_frames)}"
+        )
 
     print(
         f"[Camera] Loaded {len(cam.cam)} RGB frames from {video_path} "
