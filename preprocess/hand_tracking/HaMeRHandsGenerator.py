@@ -33,6 +33,7 @@ from hand_tracking.MediaPipeHandDetector import MediaPipeHandDetector
 from hand_tracking.VitPoseHandDetector import VitPoseHandDetector
 from hand_tracking.HaMeRModel import HaMeRModel
 from hand_tracking.HandsOps import HandsOps
+from hand_tracking.HandTrackingDiagnostics import HandTrackingDiagnostics
 from preprocess.hand_tracking.HandsTrajectoryOptimizer import HandsTrajectoryOptimizer
 
 class HaMeRHandsGenerator:
@@ -46,6 +47,7 @@ class HaMeRHandsGenerator:
         self.output_cfg = output_cfg
         self.cam = cam
         self._closed = False
+        self._validate_scoring_config()
 
         backend = str(self.cfg.detector.backend).lower()
         device = str(self.cfg.detector.device)
@@ -93,6 +95,15 @@ class HaMeRHandsGenerator:
                 "Falling back to MediaPipe-only 3D recovery."
             )
 
+        self.diagnostics = None
+        if bool(self.cfg.diagnostics.enabled):
+            self.diagnostics = HandTrackingDiagnostics(
+                unit_dir=self.unit_dir,
+                cfg=self.cfg.diagnostics,
+                detector_backend=self._detector_name,
+                frame_count=len(self.cam.cam),
+            )
+
         # 用于速度计算的缓存
         self.prev_r_cache = None
         self.prev_l_cache = None
@@ -101,6 +112,7 @@ class HaMeRHandsGenerator:
         self.prev_r_mid_R = None
         self.prev_l_mid_R = None
         self.mid_frame_builder = MidpointFrameBuilder()
+        self._score_state = {"right": None, "left": None}
 
     def cleanup(self) -> None:
         """释放单个视频手部处理期间持有的模型和帧缓存。"""
@@ -125,6 +137,8 @@ class HaMeRHandsGenerator:
         self.prev_r_mid_R = None
         self.prev_l_mid_R = None
         self.mid_frame_builder = None
+        self._score_state = {"right": None, "left": None}
+        self.diagnostics = None
 
         cam = self.cam
         self.cam = None
@@ -135,6 +149,212 @@ class HaMeRHandsGenerator:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    @staticmethod
+    def _clip_score(value: float) -> float:
+        return float(np.clip(float(value), 0.0, 1.0))
+
+    def _score_value(self, path: str, default: float) -> float:
+        value = self.cfg
+        try:
+            for part in path.split("."):
+                value = getattr(value, part)
+            return float(value)
+        except (AttributeError, TypeError, ValueError):
+            return float(default)
+
+    def _validate_scoring_config(self) -> None:
+        weights = (
+            self._score_value("scoring.final.detector_weight", 0.30),
+            self._score_value("scoring.final.geometry_weight", 0.25),
+            self._score_value("scoring.final.iou_weight", 0.15),
+            self._score_value("scoring.final.position_weight", 0.15),
+            self._score_value("scoring.final.rotation_weight", 0.15),
+        )
+        if any(weight < 0.0 for weight in weights):
+            raise ValueError("hand_tracking.scoring.final weights must be non-negative")
+        if not np.isclose(sum(weights), 1.0, atol=1e-6):
+            raise ValueError("hand_tracking.scoring.final weights must sum to 1.0")
+
+    @staticmethod
+    def _bbox_iou(first: np.ndarray, second: np.ndarray) -> float:
+        first = np.asarray(first, dtype=np.float64).reshape(4)
+        second = np.asarray(second, dtype=np.float64).reshape(4)
+        x1 = max(first[0], second[0])
+        y1 = max(first[1], second[1])
+        x2 = min(first[2], second[2])
+        y2 = min(first[3], second[3])
+        intersection = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+        area_first = max(0.0, first[2] - first[0]) * max(0.0, first[3] - first[1])
+        area_second = max(0.0, second[2] - second[0]) * max(0.0, second[3] - second[1])
+        union = area_first + area_second - intersection
+        return float(intersection / union) if union > 1e-9 else 0.0
+
+    def _geometry_metrics(
+        self,
+        keypoints_3d: np.ndarray,
+        detector_keypoints_2d: np.ndarray,
+        k: np.ndarray,
+        d: np.ndarray,
+    ) -> tuple[float, float, float]:
+        points_3d = np.asarray(keypoints_3d, dtype=np.float64)
+        points_2d = np.asarray(detector_keypoints_2d, dtype=np.float64)
+        if points_3d.shape != (21, 3) or points_2d.shape != (21, 2):
+            return 0.0, float("inf"), 0.0
+        valid = np.isfinite(points_3d).all(axis=1) & np.isfinite(points_2d).all(axis=1)
+        positive_depth = valid & (points_3d[:, 2] > 1e-5)
+        if not np.any(positive_depth):
+            return 0.0, float("inf"), 0.0
+        try:
+            import cv2
+
+            distortion = np.asarray(d if d is not None else np.zeros(8), dtype=np.float64).reshape(-1, 1)
+            projected, _ = cv2.projectPoints(
+                points_3d,
+                np.zeros(3, dtype=np.float64),
+                np.zeros(3, dtype=np.float64),
+                np.asarray(k, dtype=np.float64),
+                distortion,
+            )
+            projected = projected.reshape(-1, 2)
+            valid &= np.isfinite(projected).all(axis=1)
+            if not np.any(valid):
+                return 0.0, float("inf"), 0.0
+            errors = np.linalg.norm(projected[valid] - points_2d[valid], axis=1)
+            scale = max(self._score_value("scoring.geometry_error_scale_px", 30.0), 1e-6)
+            reprojection_score = 1.0 - float(np.clip(np.median(errors) / scale, 0.0, 1.0))
+            depth_score = float(np.mean(positive_depth[valid]))
+            geometry_confidence = self._clip_score(
+                0.7 * reprojection_score + 0.3 * depth_score
+            )
+            return geometry_confidence, float(np.median(errors)), depth_score
+        except Exception:
+            return 0.0, float("inf"), 0.0
+
+    def _history_for_frame(self, side: str, frame_idx: int, timestamp_ns: int):
+        state = self._score_state.get(side)
+        if state is None:
+            return None
+        max_gap = int(self._score_value("scoring.temporal_max_gap_frames", 3))
+        if frame_idx <= state["frame_idx"] or frame_idx - state["frame_idx"] > max_gap:
+            return None
+        if timestamp_ns <= state["timestamp_ns"]:
+            return None
+        if not np.isfinite(state["wrist_world"]).all():
+            return None
+        rotation = np.asarray(state["rotation_world"], dtype=np.float64)
+        if rotation.shape != (3, 3) or not np.isfinite(rotation).all():
+            return None
+        return state
+
+    def _world_wrist_pose(self, kpts_cam: np.ndarray, c2w: np.ndarray, k: np.ndarray, h: int, w: int):
+        hand = self._build_hand_data(
+            kpts_cam,
+            np.zeros((21, 2), dtype=np.float32),
+            0.0,
+            c2w,
+            k,
+            h,
+            w,
+            is_right=True,
+        )
+        if hand.wrist_pose is None:
+            return None, None
+        wrist_pose = np.asarray(hand.wrist_pose, dtype=np.float64)
+        rotation_cam = wrist_pose[:3, :3]
+        position_cam = wrist_pose[:3, 3]
+        c2w = np.asarray(c2w, dtype=np.float64)
+        rotation_world = c2w[:3, :3] @ rotation_cam
+        position_world = c2w[:3, :3] @ position_cam + c2w[:3, 3]
+        if not np.isfinite(position_world).all() or not np.isfinite(rotation_world).all():
+            return None, None
+        if not np.allclose(rotation_world.T @ rotation_world, np.eye(3), atol=1e-3):
+            return None, None
+        if not np.isclose(np.linalg.det(rotation_world), 1.0, atol=1e-3):
+            return None, None
+        return position_world, rotation_world
+
+    def _candidate_temporal_features(
+        self,
+        side: str,
+        detection: dict,
+        frame_idx: int,
+        timestamp_ns: int,
+        position_world: Optional[np.ndarray],
+        rotation_world: Optional[np.ndarray],
+    ) -> dict:
+        state = self._history_for_frame(side, frame_idx, timestamp_ns)
+        features = {
+            "history_available": state is not None,
+            "iou_confidence": None,
+            "position_confidence": None,
+            "position_speed_mps": None,
+            "rotation_confidence": None,
+            "angular_speed_rad_s": None,
+        }
+        if state is None or position_world is None or rotation_world is None:
+            features["history_available"] = False
+            return features
+        delta_t = (timestamp_ns - state["timestamp_ns"]) / 1e9
+        if delta_t <= 0.0:
+            features["history_available"] = False
+            return features
+        features["iou_confidence"] = self._bbox_iou(detection["bbox"], state["bbox"])
+        speed = float(np.linalg.norm(position_world - state["wrist_world"]) / delta_t)
+        max_speed = max(self._score_value("scoring.max_hand_speed_mps", 2.5), 1e-6)
+        features["position_speed_mps"] = speed
+        features["position_confidence"] = self._clip_score(1.0 - speed / max_speed)
+        relative_rotation = state["rotation_world"].T @ rotation_world
+        cosine = np.clip((np.trace(relative_rotation) - 1.0) / 2.0, -1.0, 1.0)
+        angle = float(np.arccos(cosine))
+        angular_speed = angle / delta_t
+        max_angular_speed = max(
+            self._score_value("scoring.max_hand_angular_speed_rad_s", 12.0),
+            1e-6,
+        )
+        features["angular_speed_rad_s"] = angular_speed
+        features["rotation_confidence"] = self._clip_score(
+            1.0 - angular_speed / max_angular_speed
+        )
+        return features
+
+    def _final_confidence(self, detector: float, geometry: float, temporal: dict) -> float:
+        weights = {
+            "detector": self._score_value("scoring.final.detector_weight", 0.30),
+            "geometry": self._score_value("scoring.final.geometry_weight", 0.25),
+            "iou": self._score_value("scoring.final.iou_weight", 0.15),
+            "position": self._score_value("scoring.final.position_weight", 0.15),
+            "rotation": self._score_value("scoring.final.rotation_weight", 0.15),
+        }
+        if temporal["history_available"]:
+            return self._clip_score(
+                weights["detector"] * detector
+                + weights["geometry"] * geometry
+                + weights["iou"] * temporal["iou_confidence"]
+                + weights["position"] * temporal["position_confidence"]
+                + weights["rotation"] * temporal["rotation_confidence"]
+            )
+        base_weight = weights["detector"] + weights["geometry"]
+        return self._clip_score(
+            (weights["detector"] * detector + weights["geometry"] * geometry)
+            / max(base_weight, 1e-6)
+        )
+
+    def _update_score_state(self, side: str, candidate: Optional[dict], frame_idx: int) -> None:
+        if candidate is None:
+            state = self._score_state.get(side)
+            if state is not None and frame_idx - state["frame_idx"] > int(
+                self._score_value("scoring.temporal_max_gap_frames", 3)
+            ):
+                self._score_state[side] = None
+            return
+        self._score_state[side] = {
+            "frame_idx": int(frame_idx),
+            "bbox": np.asarray(candidate["detection"]["bbox"], dtype=np.float32).copy(),
+            "timestamp_ns": int(candidate["timestamp_ns"]),
+            "wrist_world": np.asarray(candidate["wrist_world"], dtype=np.float32).copy(),
+            "rotation_world": np.asarray(candidate["rotation_world"], dtype=np.float32).copy(),
+        }
 
     def get_hands_data(self)->Hands:
         """完整对外pipeline"""
@@ -155,6 +375,13 @@ class HaMeRHandsGenerator:
             else:
                 detections = self.detector.detect(img)
 
+            frame_diagnostic = None
+            if self.diagnostics is not None:
+                frame_diagnostic = self.diagnostics.start_frame(
+                    cam_data.idx,
+                    cam_data.ts,
+                )
+
             hand_r = None
             hand_l = None
 
@@ -162,9 +389,18 @@ class HaMeRHandsGenerator:
             fy = k[1, 1]
             focal = (fx + fy) / 2.0  #焦距
 
+            candidates_by_side = {"right": [], "left": []}
             for hand in detections:
                 label = hand['label']
-                det_confidence = hand['confidence']
+                side = "right" if label == "Right" else "left"
+                det_confidence = self._clip_score(hand['confidence'])
+                candidate_diagnostic = None
+                if frame_diagnostic is not None:
+                    candidate_diagnostic = self.diagnostics.add_candidate(
+                        frame_diagnostic,
+                        hand,
+                        (h_img, w_img),
+                    )
                 # 第 2 阶段：HaMeR 从裁剪中恢复 3D 网格
                 hamer_result = self.hamer_model.predict_from_crop(
                     img, hand['bbox'],
@@ -173,41 +409,141 @@ class HaMeRHandsGenerator:
                 )
 
                 if hamer_result is not None:
-                    kpts_cam = hamer_result['joints_3d']   # (21, 3) 在相机空间
-                    kpts_2d = hamer_result['joints_2d']    # (21, 2) 像素坐标
-                    hamer_confidence = hamer_result['confidence']
-
-                    final_confidence = det_confidence * hamer_confidence #ego模式下置信度可能较低
+                    kpts_cam = np.asarray(hamer_result['joints_3d'], dtype=np.float32)
+                    kpts_2d = np.asarray(hamer_result['joints_2d'], dtype=np.float32)
+                    hamer_confidence = self._clip_score(hamer_result['confidence'])
+                    combined_confidence = self._clip_score(det_confidence * hamer_confidence)
+                    if candidate_diagnostic is not None:
+                        candidate_diagnostic.hamer_succeeded = True
+                        candidate_diagnostic.hamer_confidence = hamer_confidence
+                        candidate_diagnostic.combined_confidence = combined_confidence
+                        candidate_diagnostic.final_confidence = combined_confidence
 
                     wrist_z = kpts_cam[0,2]  # (4, 4) 相机空间
                     if (
                         wrist_z < float(self.cfg.depth_recovery.wrist_min_z_m)
                         or wrist_z > float(self.cfg.depth_recovery.wrist_max_z_m)
                     ):
+                        if candidate_diagnostic is not None:
+                            candidate_diagnostic.depth_recovery_attempted = True
                         # HaMeR 的深度不可靠（可能是由于焦距
                         # 不匹配 — HaMeR 假设 f≈5000，但 Aria 的 f≈320）。
                         # 从像素大小+真实焦点重新估计绝对深度。
-                        kpts_cam = self._recover_absolute_3d_from_hamer(kpts_cam, hand['landmarks_2d'], k, h_img, w_img,)
-                        if kpts_cam is None:
-                            continue
-                        # 现在深度已修正，重新计算置信度 
-                        final_confidence = max(
-                            float(det_confidence),
-                            float(
-                                self.cfg.depth_recovery.recovered_confidence_floor
-                            ),
+                        recovered = self._recover_absolute_3d_from_hamer(
+                            kpts_cam,
+                            hand['landmarks_2d'],
+                            k,
+                            h_img,
+                            w_img,
                         )
-                    h_data = self._build_hand_data(
-                        kpts_cam, kpts_2d, final_confidence,
-                        c2w, k, h_img, w_img,
-                        is_right=(label == "Right"),
+                        if recovered is None:
+                            if candidate_diagnostic is not None:
+                                candidate_diagnostic.rejection_reason = (
+                                    "depth_recovery_failed"
+                                )
+                            continue
+                        kpts_cam = recovered
+                        if candidate_diagnostic is not None:
+                            candidate_diagnostic.depth_recovered = True
+                    geometry_confidence, reprojection_error_px, positive_depth_ratio = self._geometry_metrics(
+                        kpts_cam,
+                        hand['landmarks_2d'],
+                        k,
+                        cam_data.d,
                     )
-                    if label == "Right":
-                        if hand_r is None or final_confidence > hand_r.confidence:
-                            hand_r = h_data
+                    wrist_world, rotation_world = self._world_wrist_pose(
+                        kpts_cam,
+                        c2w,
+                        k,
+                        h_img,
+                        w_img,
+                    )
+                    temporal = self._candidate_temporal_features(
+                        side,
+                        hand,
+                        cam_data.idx,
+                        cam_data.ts,
+                        wrist_world,
+                        rotation_world,
+                    )
+                    final_confidence = self._final_confidence(
+                        det_confidence,
+                        geometry_confidence,
+                        temporal,
+                    )
+                    candidate = {
+                        "detection": hand,
+                        "kpts_cam": kpts_cam,
+                        "kpts_2d": kpts_2d,
+                        "base_confidence": combined_confidence,
+                        "geometry_confidence": geometry_confidence,
+                        "reprojection_error_px": reprojection_error_px,
+                        "positive_depth_ratio": positive_depth_ratio,
+                        "temporal": temporal,
+                        "final_confidence": final_confidence,
+                        "timestamp_ns": cam_data.ts,
+                        "wrist_world": wrist_world,
+                        "rotation_world": rotation_world,
+                        "diagnostic": candidate_diagnostic,
+                    }
+                    if candidate_diagnostic is not None:
+                        candidate_diagnostic.reconstruction_valid = True
+                        candidate_diagnostic.geometry_confidence = geometry_confidence
+                        candidate_diagnostic.final_confidence = final_confidence
+                        candidate_diagnostic.iou_confidence = temporal["iou_confidence"]
+                        candidate_diagnostic.position_confidence = temporal["position_confidence"]
+                        candidate_diagnostic.rotation_confidence = temporal["rotation_confidence"]
+                        candidate_diagnostic.reprojection_error_px = reprojection_error_px
+                        candidate_diagnostic.positive_depth_ratio = positive_depth_ratio
+                        candidate_diagnostic.position_speed_mps = temporal["position_speed_mps"]
+                        candidate_diagnostic.angular_speed_rad_s = temporal["angular_speed_rad_s"]
+                        candidate_diagnostic.history_available = temporal["history_available"]
+                    candidates_by_side[side].append(candidate)
+                elif candidate_diagnostic is not None:
+                    candidate_diagnostic.rejection_reason = "hamer_failed"
+
+            for side, candidates in candidates_by_side.items():
+                if not candidates:
+                    self._update_score_state(side, None, cam_data.idx)
+                    continue
+                selected = max(candidates, key=lambda item: item["final_confidence"])
+                for candidate in candidates:
+                    diagnostic = candidate["diagnostic"]
+                    if diagnostic is None:
+                        continue
+                    if candidate is selected:
+                        diagnostic.selected = True
                     else:
-                        if hand_l is None or final_confidence > hand_l.confidence:
-                            hand_l = h_data
+                        diagnostic.rejection_reason = "superseded_by_higher_final_confidence"
+                h_data = self._build_hand_data(
+                    selected["kpts_cam"],
+                    selected["kpts_2d"],
+                    selected["final_confidence"],
+                    c2w,
+                    k,
+                    h_img,
+                    w_img,
+                    is_right=(side == "right"),
+                )
+                if side == "right":
+                    hand_r = h_data
+                else:
+                    hand_l = h_data
+                self._update_score_state(
+                    side,
+                    selected if selected["final_confidence"] >= float(self.cfg.postprocess.confidence_threshold) else None,
+                    cam_data.idx,
+                )
+
+            if frame_diagnostic is not None:
+                self.diagnostics.capture_detector_stage(
+                    frame_diagnostic,
+                    getattr(
+                        self.detector,
+                        "last_whole_image_fallback",
+                        False,
+                    ),
+                )
 
             frame_data = HandsData(cam_data.idx, cam_data.ts, hand_r, hand_l)
 
@@ -217,10 +553,17 @@ class HaMeRHandsGenerator:
             hands.hands.append(frame_data)
             hands.tss.append(cam_data.ts)
         # 第二阶段：数据清洗
+        if self.diagnostics is not None:
+            self.diagnostics.capture_hands_stage("hamer", hands)
         self._filter_by_confidence(
             hands,
             conf_th=float(self.cfg.postprocess.confidence_threshold),
         )
+        if self.diagnostics is not None:
+            self.diagnostics.capture_hands_stage(
+                "confidence_filtered",
+                hands,
+            )
         if bool(self.cfg.postprocess.interpolation.enabled):
             self._interpolate_hand_trajectories(
                 hands,
@@ -228,11 +571,15 @@ class HaMeRHandsGenerator:
                     self.cfg.postprocess.interpolation.max_gap_frames
                 ),
             )
+        if self.diagnostics is not None:
+            self.diagnostics.capture_hands_stage("interpolated", hands)
         if bool(self.cfg.postprocess.short_track.enabled):
             self._suppress_short_hands(
                 hands,
                 min_frames=int(self.cfg.postprocess.short_track.min_frames),
             )
+        if self.diagnostics is not None:
+            self.diagnostics.capture_hands_stage("final", hands)
         self._smooth_grasp_detection(hands, size=self.cfg.grasp.smooth_window)
         # 第三阶段：运动学优化
         if bool(self.cfg.trajectory.enabled):
@@ -249,6 +596,16 @@ class HaMeRHandsGenerator:
         except Exception as e:
             print(f"[HaMeR] Warning: analysis plots failed: {e}")
         HandsOps.print_summary_and_eval(hands)
+
+        if self.diagnostics is not None:
+            self.diagnostics.save(
+                self.cam,
+                hands,
+                grasp_threshold=float(self.cfg.grasp.fallback_distance_m),
+                opt_velocity_limit=float(
+                    self.cfg.analysis.linear_velocity_limit_mps
+                ),
+            )
 
         if self.output_cfg.export_json:
             hands.save_hands_json(filename=self.output_cfg.json_filename)

@@ -9,7 +9,7 @@ detector:
 
   vitpose:
     # 单个手部关键点被视为有效的最低置信度。
-    kpt_conf_threshold: 0.35
+    kpt_conf_threshold: 0.45
     # 21 个手部关键点中至少需要多少个有效点，才生成候选框。
     min_valid_kpts: 8
     # 根据有效关键点生成 bbox 后，按宽高比例向外扩张。
@@ -19,7 +19,7 @@ detector:
     # 左右手候选框 IoU 超过该值时，只保留置信度较高的候选。
     overlap_iou_threshold: 0.3
     # YOLO 未检测到人体、改用整图 ViTPose 推理时使用的关键点阈值。
-    fallback_kpt_conf_threshold: 0.35
+    fallback_kpt_conf_threshold: 0.45
     # 整图 ViTPose 推理前使用的补边目标宽高比。
     fallback_aspect_ratio: 0.75
 
@@ -53,6 +53,22 @@ depth_recovery:
   # 深度恢复成功后赋予结果的最低最终置信度。
   recovered_confidence_floor: 0.5
 
+scoring:
+  # 几何重投影误差达到该像素值时，geometry_confidence 降为 0。
+  geometry_error_scale_px: 30.0
+  # 上一候选超过该帧数未更新后，位置、旋转和 IoU 不再参与固定评分。
+  temporal_max_gap_frames: 3
+  # 世界坐标手腕速度达到该值时，position_confidence 降为 0，单位 m/s。
+  max_hand_speed_mps: 2.5
+  # 世界坐标手腕角速度达到该值时，rotation_confidence 降为 0，单位 rad/s。
+  max_hand_angular_speed_rad_s: 12.0
+  final:
+    detector_weight: 0.30
+    geometry_weight: 0.25
+    iou_weight: 0.15
+    position_weight: 0.15
+    rotation_weight: 0.15
+
 grasp:
   # 拇食指尖距离 / 手腕到中指 MCP 距离，小于该值判定为抓取。
   ratio_threshold: 1.0
@@ -77,7 +93,7 @@ postprocess:
     # 是否删除短暂出现的孤立手部轨迹。
     enabled: true
     # 连续有效帧少于该值时删除整段轨迹。
-    min_frames: 5
+    min_frames: 6
 
 trajectory:
   # 是否运行手腕、指尖和中点坐标系的轨迹优化。
@@ -97,3 +113,14 @@ analysis:
   # 分析图和 HUD 使用的参考上限，不会裁剪或删除轨迹。
   linear_velocity_limit_mps: 2.0
   angular_velocity_limit_rad_s: 10.0
+
+diagnostics:
+  # 是否记录检测器、HaMeR 和后处理各阶段的手部诊断数据。
+  enabled: true
+  # 单元目录内的可选人工标注；缺失时仍输出诊断，但监督指标为 null。
+  # 格式为 schema_version: 1，并用 left/right 的闭区间 [首帧, 末帧] 标注。
+  ground_truth_filename: hand_presence.yaml
+  # 输出原始候选与最终后处理结果的左右对照视频。
+  export_video: true
+  # 输出真实手与假手的三段置信度分布图。
+  export_confidence_plot: true

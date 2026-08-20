@@ -40,6 +40,7 @@ class VitPoseHandDetector:
     """
     def __init__(self, cfg, device: str = "cuda"):
         self.cfg = cfg
+        self.last_whole_image_fallback = False
         vitpose_model = None
         model_name = None
         for variant, hf_path in VITPOSE_VARIANTS:
@@ -88,8 +89,10 @@ class VitPoseHandDetector:
         kpt_conf_thr = float(self.cfg.kpt_conf_threshold)
         min_valid_kpts = int(self.cfg.min_valid_kpts)
         bbox_pad_ratio = float(self.cfg.bbox_pad_ratio)
+        whole_image_fallback = False
         keypoints = self.model.inference(img_rgb)  # {person_id: (133, 3)}
         if len(keypoints) == 0:
+            whole_image_fallback = True
             from easy_ViTPose.vit_utils.inference import pad_image
             img_pad, (left_pad, top_pad) = pad_image(
                 img_rgb,
@@ -104,6 +107,7 @@ class VitPoseHandDetector:
                 kpt_conf_thr,
                 float(self.cfg.fallback_kpt_conf_threshold),
             )
+        self.last_whole_image_fallback = whole_image_fallback
         
         detections = []
         for pid, kpts in keypoints.items():
@@ -156,6 +160,8 @@ class VitPoseHandDetector:
                     'confidence': mean_conf,
                     'landmarks_2d': landmarks_2d,
                     'world_landmarks': None,  # ViTPose 不输出 3D 世界地标
+                    'vitpose_valid_keypoints_count': int(valid.sum()),
+                    'whole_image_fallback': whole_image_fallback,
                 })
 
             # --- 对重叠的 left/right 检测进行重复数据删除 ---

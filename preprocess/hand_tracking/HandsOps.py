@@ -968,10 +968,14 @@ class HandsOps:
         if hand is None or hand.hand_keypoints_2d is None:
             return img
 
-        pts = hand.hand_keypoints_2d.astype(np.int32)
+        pts_float = np.asarray(hand.hand_keypoints_2d, dtype=np.float64)
+        if len(pts_float) < 21 or not np.isfinite(pts_float).all():
+            return img
+        safe_limit = float(max(img.shape[:2]) * 4)
+        if np.any(np.abs(pts_float) > safe_limit):
+            return img
+        pts = np.rint(pts_float).astype(np.int32)
         is_grasp = (hand.grasp_state == 1)
-
-        if len(pts) < 21: return img
 
         # BGR 中的每个手指颜色映射：[拇指、食指、中指、无名指、小指]
         if not is_grasp:
@@ -1051,7 +1055,13 @@ class HandsOps:
             np.ndarray：混合了轴小控件的图像。
                         如果位姿为“无”或原点超出框架，则返回原始图像。
         """
-        if pose is None: return img
+        if pose is None:
+            return img
+        pose = np.asarray(pose, dtype=np.float64)
+        if pose.shape != (4, 4) or not np.isfinite(pose).all():
+            return img
+        if pose[2, 3] <= 1e-4:
+            return img
 
         # 1.提取旋转向量和平移向量
         r_vec, _ = cv2.Rodrigues(pose[:3, :3])
@@ -1083,11 +1093,21 @@ class HandsOps:
         pts_3d = np.append(pts_3d, np.float32(circle_pts_3d), axis=0)
 
         # 3.将所有3D点投影到2D像素坐标
-        img_pts, _ = cv2.projectPoints(pts_3d, r_vec, t_vec, k, d)
-        img_pts = [tuple(pt.ravel().astype(int)) for pt in img_pts]
+        try:
+            img_pts, _ = cv2.projectPoints(pts_3d, r_vec, t_vec, k, d)
+            img_pts = img_pts.reshape(-1, 2)
+        except (cv2.error, ValueError, OverflowError):
+            return img
+        if not np.isfinite(img_pts).all():
+            return img
+
+        h, w = img.shape[:2]
+        safe_limit = float(max(h, w) * 4)
+        if np.any(np.abs(img_pts) > safe_limit):
+            return img
+        img_pts = [tuple(int(round(value)) for value in point) for point in img_pts]
 
         origin = img_pts[3]
-        h, w = img.shape[:2]
         if not (0 <= origin[0] < w and 0 <= origin[1] < h):
             return img
 
@@ -1313,18 +1333,27 @@ class HandsOps:
             if p_w is None:
                 return None
             p_w = np.asarray(p_w, dtype=np.float64).reshape(3)
+            if not np.isfinite(p_w).all() or not np.isfinite(c2w).all():
+                return None
             # 变换世界 → 相机坐标系
             p_c = (T_w2c[:3, :3] @ p_w) + T_w2c[:3, 3]
-            if p_c[2] <= 1e-6:  # 点在相机后面
+            if not np.isfinite(p_c).all() or p_c[2] <= 1e-4:
                 return None
             rvec = np.zeros((3, 1), dtype=np.float64)
             tvec = np.zeros((3, 1), dtype=np.float64)
-            uv, _ = cv2.projectPoints(p_c.reshape(1, 3), rvec, tvec, k, d)
+            try:
+                uv, _ = cv2.projectPoints(
+                    p_c.reshape(1, 3), rvec, tvec, k, d
+                )
+            except (cv2.error, ValueError, OverflowError):
+                return None
             u, v = uv.reshape(2)
+            if not np.isfinite([u, v]).all():
+                return None
             h, w = img.shape[:2]
             if not (0 <= u < w and 0 <= v < h):
                 return None
-            return int(u), int(v)
+            return int(round(u)), int(round(v))
 
         def _draw_one_hand(hand: Any) -> None:
             if hand is None:
@@ -1480,14 +1509,39 @@ class HandsOps:
             d: np.ndarray
         ) -> Optional[np.ndarray]:
             """将世界空间 3D 点投影到 2D 像素坐标作为 int32 数组。"""
-            if p_w is None: return None
-            T_w2c = np.linalg.inv(c2w)
+            if p_w is None:
+                return None
+            p_w = np.asarray(p_w, dtype=np.float64).reshape(3)
+            if not np.isfinite(p_w).all() or not np.isfinite(c2w).all():
+                return None
+            try:
+                T_w2c = np.linalg.inv(c2w)
+            except np.linalg.LinAlgError:
+                return None
             p_c = (T_w2c[:3, :3] @ p_w) + T_w2c[:3, 3]
-            if p_c[2] <= 1e-6: return None
+            if not np.isfinite(p_c).all() or p_c[2] <= 1e-4:
+                return None
             # rvec 和 tvec 为零，因为 p_c 已经在相机帧中
-            uv, _ = cv2.projectPoints(p_c.reshape(1, 3), np.zeros(3), np.zeros(3), k, d)
+            try:
+                uv, _ = cv2.projectPoints(
+                    p_c.reshape(1, 3),
+                    np.zeros(3),
+                    np.zeros(3),
+                    k,
+                    d,
+                )
+            except (cv2.error, ValueError, OverflowError):
+                return None
             u, v = uv.reshape(2)
-            return np.array([u, v], dtype=np.int32)
+            if not np.isfinite([u, v]).all():
+                return None
+            h, w = img.shape[:2]
+            if not (0 <= u < w and 0 <= v < h):
+                return None
+            return np.array(
+                [int(round(u)), int(round(v))],
+                dtype=np.int32,
+            )
 
         def _draw_dotted_line(
             img: np.ndarray,
@@ -1514,6 +1568,14 @@ class HandsOps:
         p_thumb_w = hand.thumb_translation_opt_world
         p_index_w = hand.index_translation_opt_world
         p_mid_w   = hand.midpoint_translation_opt_world
+
+        required_points = (p_wrist_w, p_thumb_w, p_index_w, p_mid_w)
+        if any(
+            point is None
+            or not np.isfinite(np.asarray(point, dtype=np.float64)).all()
+            for point in required_points
+        ):
+            return img
 
         # 3.计算优化的物理距离（用于文本显示）
         grasp_dist_3d = np.linalg.norm(p_thumb_w - p_index_w)

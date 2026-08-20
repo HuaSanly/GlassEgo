@@ -4,6 +4,7 @@
 
 # Runtime data and model assets
 data/
+tem_data/
 models/
 
 # Python bytecode and caches

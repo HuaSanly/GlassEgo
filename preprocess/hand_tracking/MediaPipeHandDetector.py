@@ -11,6 +11,7 @@ class MediaPipeHandDetector:
     def __init__(self, cfg):
         self._mp = mp
         self.cfg = cfg
+        self.last_whole_image_fallback = False
 
         model_path = hf_hub_download(
             repo_id=MEDIAPIPE_HF_REPO,
@@ -96,5 +97,7 @@ class MediaPipeHandDetector:
                     'confidence': confidence,
                     'landmarks_2d': kpts_2d,
                     'world_landmarks': kpts_world,
+                    'vitpose_valid_keypoints_count': None,
+                    'whole_image_fallback': False,
                 })
         return detections
