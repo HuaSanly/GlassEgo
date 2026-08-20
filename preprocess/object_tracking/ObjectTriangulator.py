@@ -29,6 +29,7 @@ import open3d as o3d
 from omegaconf import OmegaConf
 from scipy.optimize import least_squares
 from scipy.signal import savgol_filter
+from tqdm import tqdm
 
 from utils.utils_vis import draw_glass_rect
 
@@ -261,6 +262,7 @@ class ObjectTriangulatorEngine:
                 T_w2c = np.linalg.inv(poses[i])
                 pc = T_w2c[:3, :3] @ x + T_w2c[:3, 3]
                 if pc[2] < 1e-4:
+                    pts.extend((1e3, 1e3))
                     continue
                 uv = Ks[i] @ pc
                 pts.extend((uv[:2] / uv[2]) - obs_uv[i])
@@ -288,7 +290,12 @@ class ObjectTriangulator:
         self.ply_path = self.output_dir / "object_3d_vis.ply"
         self.engine = ObjectTriangulatorEngine(self.cfg)
 
-    def triangulate(self, tracks_document: dict, frames_bgr: list) -> tuple[dict, np.ndarray]:
+    def triangulate(
+        self,
+        tracks_document: dict,
+        frames_bgr: list,
+        vio_result=None,
+    ) -> tuple[dict, np.ndarray]:
         """把 CoTracker tracks 转为 3D 点云和 PCA 物体位姿。"""
         frame_indices = [int(item) for item in tracks_document["frames"]]
         if len(frame_indices) != len(frames_bgr):
@@ -297,8 +304,14 @@ class ObjectTriangulator:
                 f"images={len(frames_bgr)}, tracks={len(frame_indices)}"
             )
 
-        calibration = self._load_calibration()
-        vio_frames = self._load_vio_frames()
+        calibration = (
+            vio_result.calibration if vio_result is not None else self._load_calibration()
+        )
+        vio_frames = (
+            {frame.frame_idx: frame.c2w for frame in vio_result.trajectory.frames}
+            if vio_result is not None
+            else self._load_vio_frames()
+        )
         poses = [vio_frames[index] for index in frame_indices]
         K = self._camera_matrix(calibration)
         Ks = [K for _ in poses]
@@ -316,7 +329,12 @@ class ObjectTriangulator:
         if not obj_keys:
             raise ValueError("No obj* tracks found for triangulation")
 
-        for obj_key in obj_keys:
+        for obj_key in tqdm(
+            obj_keys,
+            desc="Triangulation objects",
+            unit="object",
+            dynamic_ncols=True,
+        ):
             is_anchor = obj_key == obj_keys[0]
             object_tracks = tracks_document["objects"][obj_key]
             tracks = np.asarray(object_tracks["tracks"], dtype=np.float64)
@@ -331,7 +349,13 @@ class ObjectTriangulator:
 
             points_world = []
             conditions = []
-            for point_idx in range(tracks.shape[1]):
+            for point_idx in tqdm(
+                range(tracks.shape[1]),
+                desc=f"{obj_key} points",
+                unit="point",
+                leave=False,
+                dynamic_ncols=True,
+            ):
                 p3d_init, condition = self.engine.triangulate_dlt(
                     sub_poses,
                     sub_Ks,
@@ -460,7 +484,11 @@ class ObjectTriangulator:
         return OmegaConf.load(calibration_path)
 
     def _camera_matrix(self, calibration) -> np.ndarray:
-        intrinsics = OmegaConf.select(calibration, "camera.intrinsics", default=[])
+        intrinsics = (
+            calibration.intrinsics.tolist()
+            if hasattr(calibration, "intrinsics")
+            else OmegaConf.select(calibration, "camera.intrinsics", default=[])
+        )
         if len(intrinsics) != 4:
             raise ValueError("camera.intrinsics must contain [fx, fy, cx, cy]")
         fx, fy, cx, cy = (float(value) for value in intrinsics)

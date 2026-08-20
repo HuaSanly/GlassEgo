@@ -1,6 +1,8 @@
 
+import gc
 import os
 import numpy as np
+import torch
 from huggingface_hub import hf_hub_download
 from easy_ViTPose import VitInference
 
@@ -36,7 +38,8 @@ class VitPoseHandDetector:
       91-111：左手 (21)
       112-132：右手 (21)
     """
-    def __init__(self, device:str = "cuda"):
+    def __init__(self, cfg, device: str = "cuda"):
+        self.cfg = cfg
         vitpose_model = None
         model_name = None
         for variant, hf_path in VITPOSE_VARIANTS:
@@ -69,20 +72,38 @@ class VitPoseHandDetector:
         self._model_name = model_name
         print(f"[ViTPose] Loaded ViTPose-{model_name.upper()} wholebody + YOLOv8s (from HuggingFace Hub)")
         VitPoseHandDetector.VITPOSE_AVAILABLE = True
-    def detect(self, img_rgb: np.ndarray, kpt_conf_thr: float = 0.3,
-               min_valid_kpts: int = 4, bbox_pad_ratio: float = 0.3) -> list:
+
+    def cleanup(self) -> None:
+        """释放 ViTPose 和 YOLO 模型。"""
+        model = getattr(self, "model", None)
+        self.model = None
+        del model
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def detect(self, img_rgb: np.ndarray) -> list:
 
         h_img, w_img = img_rgb.shape[:2]
+        kpt_conf_thr = float(self.cfg.kpt_conf_threshold)
+        min_valid_kpts = int(self.cfg.min_valid_kpts)
+        bbox_pad_ratio = float(self.cfg.bbox_pad_ratio)
         keypoints = self.model.inference(img_rgb)  # {person_id: (133, 3)}
         if len(keypoints) == 0:
             from easy_ViTPose.vit_utils.inference import pad_image
-            img_pad, (left_pad, top_pad) = pad_image(img_rgb, 3 / 4)
+            img_pad, (left_pad, top_pad) = pad_image(
+                img_rgb,
+                float(self.cfg.fallback_aspect_ratio),
+            )
             raw_kpts = self.model._inference(img_pad)[0]  # 推理 (133, 3) [y, x, 配置] 
             raw_kpts[:, :2] -= [top_pad, left_pad] #去掉补边造成的偏移
             keypoints = {0: raw_kpts}
 
             # 以自我为中心的置信度阈值较低（没有身体背景 → 噪音更大）
-            kpt_conf_thr = min(kpt_conf_thr, 0.15)
+            kpt_conf_thr = min(
+                kpt_conf_thr,
+                float(self.cfg.fallback_kpt_conf_threshold),
+            )
         
         detections = []
         for pid, kpts in keypoints.items():
@@ -122,7 +143,10 @@ class VitPoseHandDetector:
                 # 跳过微小的检测（可能来自低置信度关键点的噪音）
                 bbox_w = bbox[2] - bbox[0]
                 bbox_h = bbox[3] - bbox[1]
-                if bbox_w < 20 or bbox_h < 20:
+                if (
+                    bbox_w < float(self.cfg.min_bbox_size_px)
+                    or bbox_h < float(self.cfg.min_bbox_size_px)
+                ):
                     continue
 
                 candidates.append({
@@ -150,7 +174,7 @@ class VitPoseHandDetector:
                 union = a1 + a2 - inter
                 iou = inter / max(union, 1e-6)
 
-                if iou > 0.3: #交并比较高
+                if iou > float(self.cfg.overlap_iou_threshold): #交并比较高
                     # 检测到左右手是同一只手——保持更高的置信度
                     best = max(candidates, key=lambda c: c['confidence'])
                     detections.append(best)

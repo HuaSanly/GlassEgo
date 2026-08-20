@@ -8,8 +8,9 @@ MEDIAPIPE_HF_REPO = "Leo-TX/mediapipe-hand"
 
 class MediaPipeHandDetector:
 
-    def __init__(self):
+    def __init__(self, cfg):
         self._mp = mp
+        self.cfg = cfg
 
         model_path = hf_hub_download(
             repo_id=MEDIAPIPE_HF_REPO,
@@ -22,14 +23,26 @@ class MediaPipeHandDetector:
                 model_asset_path=model_path
             ),
             running_mode=mp.tasks.vision.RunningMode.VIDEO,
-            num_hands=2,
-            min_hand_detection_confidence=0.5,
-            min_hand_presence_confidence=0.5,
-            min_tracking_confidence=0.5,
+            num_hands=int(self.cfg.num_hands),
+            min_hand_detection_confidence=float(
+                self.cfg.min_detection_confidence
+            ),
+            min_hand_presence_confidence=float(
+                self.cfg.min_presence_confidence
+            ),
+            min_tracking_confidence=float(self.cfg.min_tracking_confidence),
         )
         self.landmarker = (
             mp.tasks.vision.HandLandmarker.create_from_options(options)
         )
+
+    def cleanup(self) -> None:
+        """关闭 MediaPipe 任务实例。"""
+        landmarker = getattr(self, "landmarker", None)
+        self.landmarker = None
+        if landmarker is not None:
+            landmarker.close()
+
     def detect(self, img_rgb: np.ndarray,timestamp_ms) -> list:
         """
         使用MediaPipe检测手部关键点。
@@ -67,8 +80,8 @@ class MediaPipeHandDetector:
                 # 计算带填充的边界框
                 x_min, y_min = kpts_2d.min(axis=0)
                 x_max, y_max = kpts_2d.max(axis=0)
-                pad_x = (x_max - x_min) * 0.3
-                pad_y = (y_max - y_min) * 0.3
+                pad_x = (x_max - x_min) * float(self.cfg.bbox_pad_ratio)
+                pad_y = (y_max - y_min) * float(self.cfg.bbox_pad_ratio)
                 bbox = np.array([
                     max(0, x_min - pad_x),
                     max(0, y_min - pad_y),

@@ -58,12 +58,36 @@ class ObjectTrackingResult:
     report: dict
 
     def to_dict(self) -> dict:
+        def relative_path(path: Path) -> str:
+            try:
+                return str(Path(path).resolve().relative_to(self.unit_dir.resolve()))
+            except ValueError:
+                return str(path)
+
         return {
             "schema_version": 1,
-            "unit_dir": str(self.unit_dir),
-            "video_path": str(self.video_path),
-            "output_dir": str(self.output_dir),
-            "frames": [frame.to_dict() for frame in self.frames],
+            "unit_dir": ".",
+            "video_path": relative_path(self.video_path),
+            "output_dir": relative_path(self.output_dir),
+            "frames": [
+                {
+                    **frame.to_dict(),
+                    "combined_mask_path": relative_path(frame.combined_mask_path),
+                    "vis_path": (
+                        relative_path(frame.vis_path)
+                        if frame.vis_path is not None
+                        else None
+                    ),
+                    "objects": [
+                        {
+                            **item.to_dict(),
+                            "mask_path": relative_path(item.mask_path),
+                        }
+                        for item in frame.objects
+                    ],
+                }
+                for frame in self.frames
+            ],
         }
 
     def save_json(self, path: str | Path) -> None:

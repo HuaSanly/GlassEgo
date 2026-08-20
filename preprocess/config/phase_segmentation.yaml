@@ -1,0 +1,30 @@
+enabled: true
+
+# 0=STOP, 1=FORWARD, 2=ROTATE, 3=TRANSITION, 4=FINISHED.
+v_stop_thresh: 0.03
+w_stop_thresh: 0.15
+stop_hold_frames: 15
+stop_debounce_frames: 8
+stop_min_on_frames: 75
+stop_yaw_veto_deg: 20.0
+stop_offset_frames: 10
+
+w_rot_thresh: 0.10
+v_rot_max: 0.08
+mode_median_window_frames: 21
+mode_min_run_frames: 30
+transition_offset_frames: 10
+finished_frames: 30
+
+hand_refinement:
+  enabled: true
+  velocity_threshold_mps: 0.15
+  stable_frames: 5
+  boundary_frames: 10
+  min_valid_fraction: 0.5
+
+output:
+  export_json: true
+  export_analysis: true
+  export_video: true
+  video_filename: phases_vis.mp4

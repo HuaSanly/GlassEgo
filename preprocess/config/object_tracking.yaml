@@ -1,0 +1,50 @@
+enabled: false
+reuse_existing: false
+
+indices:
+  object_centric_max_frames: 60
+  object_centric_min_frames: 30
+  reference_index: -1
+
+dinosam:
+  dino_model_id: IDEA-Research/grounding-dino-base
+  box_threshold: 0.3
+  sam2_repo_id: facebook/sam2-hiera-large
+  sam2_checkpoint_name: sam2_hiera_large.pt
+  sam2_config: sam2_hiera_l.yaml
+
+kpts_selector:
+  kpts_patch_close: true
+  kpts_close_kernel: 7
+  kpts_patch_erode: true
+  kpts_erode_kernel: 5
+  kpts_erode_iters: 1
+  kpts_use_inner_edge: true
+  kpts_edge_erode_kernel: 5
+  kpts_min_edge_pixels: 50
+  kpts_n_bands: 10
+
+cotracker:
+  cotracker_res: 640
+  cotracker_chunk_size: 100
+  cotracker_viz_trail_len: 20
+  hf_repo_id: facebook/cotracker3
+  checkpoint_name: scaled_offline.pth
+
+triangulator:
+  pose_method: pca2
+  step: 1
+  smooth_window: 7
+  smooth_polyorder: 2
+  ba_f_scale: 3.0
+  axes_len_m: 0.12
+  point_radius_m: 0.005
+  line_radius_m: 0.001
+
+output:
+  export_json: true
+  export_dinosam_vis: true
+  export_keypoints_vis: true
+  export_tracks_vis: true
+  export_gif: false
+  gif_frame_ratio: 10

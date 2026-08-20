@@ -31,6 +31,7 @@ from PIL import Image
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
+from tqdm import tqdm
 
 from utils.utils_vis import (
     C_CYAN,
@@ -68,21 +69,35 @@ class DINOSAMEngine:
     def __init__(self, cfg):
         self.cfg = cfg
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.processor = None
+        self.dino_model = None
+        self.predictor = None
+        self._closed = False
 
         # 首次运行时 HuggingFace 会下载权重；之后从本机缓存加载。
-        print(f"║ [System] Initializing Models on {self.device}...")
-        self.processor = AutoProcessor.from_pretrained(self.cfg.dino_model_id)
-        self.dino_model = AutoModelForZeroShotObjectDetection.from_pretrained(
-            self.cfg.dino_model_id
-        ).to(self.device)
+        print(f"║ [DINO-SAM] Initializing models on {self.device}...", flush=True)
+        try:
+            print("║ [DINO-SAM] Loading Grounding DINO processor...", flush=True)
+            self.processor = AutoProcessor.from_pretrained(self.cfg.dino_model_id)
+            print("║ [DINO-SAM] Loading Grounding DINO weights...", flush=True)
+            self.dino_model = AutoModelForZeroShotObjectDetection.from_pretrained(
+                self.cfg.dino_model_id
+            ).to(self.device)
+            self.dino_model.eval()
+            print("║ [DINO-SAM] Grounding DINO ready.", flush=True)
 
-        ckpt_path = hf_hub_download(
-            repo_id=self.cfg.sam2_repo_id,
-            filename=self.cfg.sam2_checkpoint_name,
-        )
-        self.predictor = SAM2ImagePredictor(
-            build_sam2(self.cfg.sam2_config, ckpt_path, device=self.device)
-        )
+            print("║ [DINO-SAM] Loading SAM2 weights...", flush=True)
+            ckpt_path = hf_hub_download(
+                repo_id=self.cfg.sam2_repo_id,
+                filename=self.cfg.sam2_checkpoint_name,
+            )
+            self.predictor = SAM2ImagePredictor(
+                build_sam2(self.cfg.sam2_config, ckpt_path, device=self.device)
+            )
+            print("║ [DINO-SAM] SAM2 ready.", flush=True)
+        except BaseException:
+            self.cleanup()
+            raise
 
     def predict_frame_internal(self, image_np, text_prompt):
         """在已经 set_image 的当前帧上，对单个 prompt 做 DINO+SAM2。
@@ -137,14 +152,26 @@ class DINOSAMEngine:
         return (combined_mask.astype(np.uint8) * 255), avg_conf, input_boxes, confidences
 
     def cleanup(self):
-        """Release resources."""
+        """Release DINO, SAM2 and the current SAM2 image embedding."""
+        if self._closed:
+            return
+        self._closed = True
         print("║ [Cleanup] Releasing Engine Resources...")
-        if hasattr(self, "dino_model"):
-            self.dino_model.to("cpu")
-            del self.dino_model
-        if hasattr(self, "predictor"):
-            self.predictor.model.to("cpu")
-            del self.predictor
+        predictor = self.predictor
+        self.predictor = None
+        if predictor is not None:
+            predictor.reset_predictor()
+            predictor.model.to("cpu")
+        del predictor
+
+        dino_model = self.dino_model
+        self.dino_model = None
+        if dino_model is not None:
+            dino_model.to("cpu")
+        del dino_model
+
+        self.processor = None
+        self.cfg = None
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -285,7 +312,7 @@ class DINOSAM:
             cv2.imwrite(save_path, mask_out)
         return mask_out
 
-    def process_and_save(self, image, prompts_dict, output_dir):
+    def process_and_save(self, image, prompts_dict, output_dir, progress=None):
         """处理单图多 prompt，并把 mask 写入指定帧目录。
 
         输出文件：
@@ -365,10 +392,15 @@ class DINOSAM:
                 latency,
                 prompt,
             )
+            if progress is not None:
+                progress.update(1)
 
         combined_path = output_dir / "mask_arm_and_obj.png"
         cv2.imwrite(str(combined_path), combined_all_mask)
         return last_vis, prompts_count, results
 
     def cleanup(self):
-        self.engine.cleanup()
+        engine = getattr(self, "engine", None)
+        self.engine = None
+        if engine is not None:
+            engine.cleanup()

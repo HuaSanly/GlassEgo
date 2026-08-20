@@ -1,61 +1,99 @@
+# 是否运行整个手部预处理模块。
 enabled: true
 
 detector:
-  backend: auto              # auto / vitpose / mediapipe
+  # auto 优先 ViTPose，初始化失败时回退 MediaPipe；另外两个值强制使用指定后端。
+  backend: auto
+  # ViTPose 推理设备，继承 default.yaml 中的 runtime.device。
   device: ${runtime.device}
 
   vitpose:
-    kpt_conf_threshold: 0.3
-    min_valid_kpts: 4
+    # 单个手部关键点被视为有效的最低置信度。
+    kpt_conf_threshold: 0.35
+    # 21 个手部关键点中至少需要多少个有效点，才生成候选框。
+    min_valid_kpts: 8
+    # 根据有效关键点生成 bbox 后，按宽高比例向外扩张。
     bbox_pad_ratio: 0.3
+    # 候选框宽或高的最小像素值。
     min_bbox_size_px: 20
+    # 左右手候选框 IoU 超过该值时，只保留置信度较高的候选。
     overlap_iou_threshold: 0.3
+    # YOLO 未检测到人体、改用整图 ViTPose 推理时使用的关键点阈值。
+    fallback_kpt_conf_threshold: 0.35
+    # 整图 ViTPose 推理前使用的补边目标宽高比。
+    fallback_aspect_ratio: 0.75
 
   mediapipe:
+    # 单帧最多输出的手数量。
     num_hands: 2
+    # MediaPipe 首次检测、手存在性和视频跟踪的最低置信度。
     min_detection_confidence: 0.5
     min_presence_confidence: 0.5
     min_tracking_confidence: 0.5
+    # 根据 MediaPipe 21 点生成 bbox 后的扩张比例。
     bbox_pad_ratio: 0.3
 
 hamer:
+  # 当前 Generator 依赖 HaMeR 生成 3D 手；关闭时会明确报错。
   enabled: true
+  # HaMeR 推理设备。
   device: ${runtime.device}
+  # HaMeR checkpoint/config 和 MANO 模型所在的 Hugging Face 仓库。
   hamer_hf_repo: Leo-TX/hamer
   mano_hf_repo: warmshao/WiLoR-mini
 
 depth_recovery:
+  # HaMeR 手腕深度超出该区间时，触发基于手部像素尺度的深度恢复。
   wrist_min_z_m: 0.05
   wrist_max_z_m: 3.0
+  # 手腕到中指 MCP 的像素距离小于该值时，不执行深度恢复。
   min_pixel_distance: 5.0
+  # 深度恢复使用的手腕到中指 MCP 参考物理长度，单位米。
   wrist_middle_mcp_m: 0.085
+  # 深度恢复成功后赋予结果的最低最终置信度。
+  recovered_confidence_floor: 0.5
 
 grasp:
+  # 拇食指尖距离 / 手腕到中指 MCP 距离，小于该值判定为抓取。
   ratio_threshold: 1.0
+  # 无法计算尺度比例时使用的绝对指尖距离阈值，单位米。
   fallback_distance_m: 0.105
+  # 抓取状态的一维均值平滑窗口，单位帧。
   smooth_window: 5
+  # 不超过该长度的短抓取/非抓取片段会被翻转，单位帧。
   flicker_max_len: 5
 
 postprocess:
+  # 最终 hand confidence 低于该值时删除结果。
   confidence_threshold: 0.3
 
   interpolation:
+    # 是否在线性轨迹中填补短暂漏检。
     enabled: true
-    max_gap_frames: 3
+    # 允许插值的最大连续缺失帧数。
+    max_gap_frames: 6
 
   short_track:
+    # 是否删除短暂出现的孤立手部轨迹。
     enabled: true
+    # 连续有效帧少于该值时删除整段轨迹。
     min_frames: 5
 
 trajectory:
+  # 是否运行手腕、指尖和中点坐标系的轨迹优化。
   enabled: true
+  # Savitzky-Golay 平滑窗口和多项式阶数；窗口运行时会调整为奇数。
   sg_window: 9
   sg_polyorder: 2
+  # 连续轨迹达到该帧数后才运行优化。
   min_valid_frames: 15
+  # 轨迹优化器内部允许填补的最大连续缺失帧数。
   fill_max_gap_frames: 6
+  # 手腕和中点坐标轴方向的 EMA 系数；越小越平滑、响应越慢。
   ema_alpha_x: 0.2
   ema_alpha_y: 0.2
 
 analysis:
+  # 分析图和 HUD 使用的参考上限，不会裁剪或删除轨迹。
   linear_velocity_limit_mps: 2.0
   angular_velocity_limit_rad_s: 10.0

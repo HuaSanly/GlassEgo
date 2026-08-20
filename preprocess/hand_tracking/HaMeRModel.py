@@ -15,6 +15,7 @@ HaMeR 3D手部网格恢复器
 ====================================================================================================
 """
 from pathlib import Path
+import gc
 
 
 import numpy as np
@@ -35,9 +36,16 @@ class HaMeRModel:
     HAMER_HF_REPO = "Leo-TX/hamer"
     MANO_HF_REPO = "warmshao/WiLoR-mini"
 
-    def __init__(self, device: str = "cuda"):
+    def __init__(
+        self,
+        device: str = "cuda",
+        hamer_hf_repo: str = HAMER_HF_REPO,
+        mano_hf_repo: str = MANO_HF_REPO,
+    ):
 
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        self.hamer_hf_repo = str(hamer_hf_repo)
+        self.mano_hf_repo = str(mano_hf_repo)
         self.model = None
         self.cfg = None
 
@@ -54,22 +62,20 @@ class HaMeRModel:
             print(f"[HaMeR] WARNING: Failed to load HaMeR model: {e}")
             self.model = None
 
-    @classmethod
-    def _download_hamer_assets(cls) -> dict[str, str]:
+    def _download_hamer_assets(self) -> dict[str, str]:
         from huggingface_hub import hf_hub_download
 
         filenames = ("hamer.ckpt", "model_config.yaml", "mano_mean_params.npz")
         return {
-            filename: hf_hub_download(repo_id=cls.HAMER_HF_REPO, filename=filename)
+            filename: hf_hub_download(repo_id=self.hamer_hf_repo, filename=filename)
             for filename in filenames
         }
 
-    @classmethod
-    def _download_mano(cls) -> str:
+    def _download_mano(self) -> str:
         from huggingface_hub import hf_hub_download
 
         return hf_hub_download(
-            repo_id=cls.MANO_HF_REPO,
+            repo_id=self.mano_hf_repo,
             filename="pretrained_models/MANO_RIGHT.pkl",
         )
 
@@ -95,6 +101,18 @@ class HaMeRModel:
     @property
     def is_available(self) -> bool:
         return self.model is not None
+
+    def cleanup(self) -> None:
+        """释放 HaMeR 模型持有的 CPU 和 GPU 资源。"""
+        model = self.model
+        self.model = None
+        self.cfg = None
+        self.HAMER_AVAILABLE = False
+        del model
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     @staticmethod
     def _compute_hamer_confidence(
         pred_kpts_3d_rel: np.ndarray,

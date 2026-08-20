@@ -17,8 +17,10 @@ Keypoint order:
     17-20 Pinky: MCP, PIP, DIP, Tip
 """
 import os
+import gc
 from pathlib import Path
 import numpy as np
+import torch
 from tqdm import tqdm
 
 from scipy.spatial.transform import Rotation as R
@@ -34,8 +36,6 @@ from hand_tracking.HandsOps import HandsOps
 from preprocess.hand_tracking.HandsTrajectoryOptimizer import HandsTrajectoryOptimizer
 
 class HaMeRHandsGenerator:
-    
-    HAND_SIZE_WRIST_TO_MIDDLE_MCP_M = 0.085  # 以米为单位的成年人平均手腕到中间 MCP 的距离（用于深度估计）
 
     def __init__(self, unit_dir, cfg, output_cfg, cam: Cam):
         self.unit_dir = Path(unit_dir)
@@ -45,17 +45,47 @@ class HaMeRHandsGenerator:
         self.cfg = cfg
         self.output_cfg = output_cfg
         self.cam = cam
+        self._closed = False
 
-        #初始化手部检测器
-        try:
-            self.detector = VitPoseHandDetector(device="cuda")
-            self._detector_name = "VitPose"
-        except (ImportError, FileNotFoundError, Exception) as e:
-            print(f"[HaMeR] ViTPose not available ({e}), falling back to MediaPipe detector")
-            self.detector = MediaPipeHandDetector()
+        backend = str(self.cfg.detector.backend).lower()
+        device = str(self.cfg.detector.device)
+        if backend not in {"auto", "vitpose", "mediapipe"}:
+            raise ValueError(
+                "hand_tracking.detector.backend must be auto, vitpose, or mediapipe"
+            )
+
+        if backend == "mediapipe":
+            self.detector = MediaPipeHandDetector(self.cfg.detector.mediapipe)
             self._detector_name = "MediaPipe"
-        #初始化HaMeR
-        self.hamer_model = HaMeRModel()
+        else:
+            try:
+                self.detector = VitPoseHandDetector(
+                    self.cfg.detector.vitpose,
+                    device=device,
+                )
+                self._detector_name = "VitPose"
+            except Exception as e:
+                if backend == "vitpose":
+                    raise
+                print(
+                    f"[HaMeR] ViTPose not available ({e}), "
+                    "falling back to MediaPipe detector"
+                )
+                self.detector = MediaPipeHandDetector(
+                    self.cfg.detector.mediapipe
+                )
+                self._detector_name = "MediaPipe"
+
+        if not bool(self.cfg.hamer.enabled):
+            raise RuntimeError(
+                "hand_tracking.hamer.enabled must be true; "
+                "the current generator requires HaMeR 3D reconstruction"
+            )
+        self.hamer_model = HaMeRModel(
+            device=str(self.cfg.hamer.device),
+            hamer_hf_repo=str(self.cfg.hamer.hamer_hf_repo),
+            mano_hf_repo=str(self.cfg.hamer.mano_hf_repo),
+        )
 
         if not self.hamer_model.is_available:
             print(
@@ -71,6 +101,40 @@ class HaMeRHandsGenerator:
         self.prev_r_mid_R = None
         self.prev_l_mid_R = None
         self.mid_frame_builder = MidpointFrameBuilder()
+
+    def cleanup(self) -> None:
+        """释放单个视频手部处理期间持有的模型和帧缓存。"""
+        if self._closed:
+            return
+        self._closed = True
+
+        detector = getattr(self, "detector", None)
+        self.detector = None
+        if detector is not None and hasattr(detector, "cleanup"):
+            detector.cleanup()
+
+        hamer_model = getattr(self, "hamer_model", None)
+        self.hamer_model = None
+        if hamer_model is not None:
+            hamer_model.cleanup()
+
+        self.prev_r_cache = None
+        self.prev_l_cache = None
+        self.prev_r_mid_cache = None
+        self.prev_l_mid_cache = None
+        self.prev_r_mid_R = None
+        self.prev_l_mid_R = None
+        self.mid_frame_builder = None
+
+        cam = self.cam
+        self.cam = None
+        if cam is not None:
+            cam.cam.clear()
+            cam.tss.clear()
+
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def get_hands_data(self)->Hands:
         """完整对外pipeline"""
@@ -116,7 +180,10 @@ class HaMeRHandsGenerator:
                     final_confidence = det_confidence * hamer_confidence #ego模式下置信度可能较低
 
                     wrist_z = kpts_cam[0,2]  # (4, 4) 相机空间
-                    if wrist_z < 0.05 or wrist_z > 3.0:
+                    if (
+                        wrist_z < float(self.cfg.depth_recovery.wrist_min_z_m)
+                        or wrist_z > float(self.cfg.depth_recovery.wrist_max_z_m)
+                    ):
                         # HaMeR 的深度不可靠（可能是由于焦距
                         # 不匹配 — HaMeR 假设 f≈5000，但 Aria 的 f≈320）。
                         # 从像素大小+真实焦点重新估计绝对深度。
@@ -124,7 +191,12 @@ class HaMeRHandsGenerator:
                         if kpts_cam is None:
                             continue
                         # 现在深度已修正，重新计算置信度 
-                        final_confidence = max(float(det_confidence), 0.50)
+                        final_confidence = max(
+                            float(det_confidence),
+                            float(
+                                self.cfg.depth_recovery.recovered_confidence_floor
+                            ),
+                        )
                     h_data = self._build_hand_data(
                         kpts_cam, kpts_2d, final_confidence,
                         c2w, k, h_img, w_img,
@@ -145,13 +217,27 @@ class HaMeRHandsGenerator:
             hands.hands.append(frame_data)
             hands.tss.append(cam_data.ts)
         # 第二阶段：数据清洗
-        self._filter_by_confidence(hands, conf_th=0.3) #过滤低置信度
-        self._interpolate_hand_trajectories(hands, max_gap=self.cfg.postprocess.interpolation.max_gap_frames * 2) #插值
-        self._suppress_short_hands(hands, min_frames=max(5, self.cfg.postprocess.short_track.min_frames // 3))
+        self._filter_by_confidence(
+            hands,
+            conf_th=float(self.cfg.postprocess.confidence_threshold),
+        )
+        if bool(self.cfg.postprocess.interpolation.enabled):
+            self._interpolate_hand_trajectories(
+                hands,
+                max_gap=int(
+                    self.cfg.postprocess.interpolation.max_gap_frames
+                ),
+            )
+        if bool(self.cfg.postprocess.short_track.enabled):
+            self._suppress_short_hands(
+                hands,
+                min_frames=int(self.cfg.postprocess.short_track.min_frames),
+            )
         self._smooth_grasp_detection(hands, size=self.cfg.grasp.smooth_window)
         # 第三阶段：运动学优化
-        optimizer = HandsTrajectoryOptimizer(self.cfg.trajectory, dt)
-        optimizer.run(hands)
+        if bool(self.cfg.trajectory.enabled):
+            optimizer = HandsTrajectoryOptimizer(self.cfg.trajectory, dt)
+            optimizer.run(hands)
         self._smooth_grasp_detection(hands, size=self.cfg.grasp.smooth_window)
 
         # 第四阶段：报告
@@ -225,11 +311,13 @@ class HaMeRHandsGenerator:
             # 与 HaMeR 3D 关节的物理距离
             physical_dist = float(np.linalg.norm(kpts_3d_hamer[9] - kpts_3d_hamer[0]))
             if physical_dist < 0.01:
-                physical_dist = self.HAND_SIZE_WRIST_TO_MIDDLE_MCP_M
+                physical_dist = float(
+                    self.cfg.depth_recovery.wrist_middle_mcp_m
+                )
     
             # 2D像素距离
             pixel_dist = float(np.linalg.norm(middle_mcp_2d - wrist_2d))
-            if pixel_dist < 5.0:
+            if pixel_dist < float(self.cfg.depth_recovery.min_pixel_distance):
                 return None
     
             fx = k[0, 0]
@@ -238,7 +326,10 @@ class HaMeRHandsGenerator:
 
             z_wrist = focal * physical_dist / pixel_dist  #针孔模型相似三角形
     
-            if z_wrist < 0.05 or z_wrist > 3.0: #超出合理范围则估算失败
+            if (
+                z_wrist < float(self.cfg.depth_recovery.wrist_min_z_m)
+                or z_wrist > float(self.cfg.depth_recovery.wrist_max_z_m)
+            ): #超出合理范围则估算失败
                 return None
     
             # 反投影手腕得到 2D -> 3D 相机系下的点 
@@ -307,9 +398,11 @@ class HaMeRHandsGenerator:
         palm_size = float(np.linalg.norm(mid_mcp - wrist))
         if palm_size > 0.01:
             grasp_ratio = distance / palm_size
-            grasp_state = 1 if grasp_ratio < 1.0 else 0
+            grasp_state = (
+                1 if grasp_ratio < float(self.cfg.grasp.ratio_threshold) else 0
+            )
         else:
-            grasp_threshold = 0.105
+            grasp_threshold = float(self.cfg.grasp.fallback_distance_m)
             grasp_state = 1 if distance < grasp_threshold else 0
 
         # 关节角度

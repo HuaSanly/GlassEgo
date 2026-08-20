@@ -28,6 +28,7 @@ import numpy as np
 import torch
 from cotracker.predictor import CoTrackerPredictor
 from huggingface_hub import hf_hub_download
+from tqdm import tqdm
 
 from utils.utils_vis import draw_glass_rect
 
@@ -150,7 +151,12 @@ class CoTrackerEngine:
 
         all_frames_sq = []
         lb_meta = None
-        for img in frames_bgr:
+        for img in tqdm(
+            frames_bgr,
+            desc="CoTracker prepare",
+            unit="frame",
+            dynamic_ncols=True,
+        ):
             sq, meta = self._letterbox(img)
             all_frames_sq.append(sq)
             if lb_meta is None:
@@ -162,13 +168,18 @@ class CoTrackerEngine:
         final_tracks_sq = np.zeros((num_frames, len(init_kpts), 2), dtype=np.float32)
         final_vis = np.zeros((num_frames, len(init_kpts)), dtype=np.float32)
 
-        print(f"║ [CoTracker] Tracking Forward from frame {ref_idx}...")
+        print(f"║ [CoTracker] Tracking Forward from frame {ref_idx}...", flush=True)
         curr_queries = init_queries_sq
-        for start_f in range(ref_idx, num_frames - 1, chunk_size - 1):
+        forward_starts = range(ref_idx, num_frames - 1, chunk_size - 1)
+        for start_f in tqdm(
+            forward_starts,
+            desc="CoTracker forward",
+            unit="chunk",
+            dynamic_ncols=True,
+        ):
             end_f = min(start_f + chunk_size, num_frames)
             chunk_frames = all_frames_sq[start_f:end_f]
 
-            print(f"  → Chunk: {start_f} to {end_f - 1}")
             t_chunk, v_chunk = self._process_single_chunk(chunk_frames, curr_queries)
 
             final_tracks_sq[start_f:end_f] = t_chunk
@@ -176,15 +187,20 @@ class CoTrackerEngine:
             curr_queries = t_chunk[-1].tolist()
 
         if ref_idx > 0:
-            print(f"║ [CoTracker] Tracking Backward from frame {ref_idx}...")
+            print(f"║ [CoTracker] Tracking Backward from frame {ref_idx}...", flush=True)
             backward_indices = list(range(ref_idx, -1, -1))
             curr_queries = init_queries_sq
 
-            for i in range(0, len(backward_indices) - 1, chunk_size - 1):
+            backward_starts = range(0, len(backward_indices) - 1, chunk_size - 1)
+            for i in tqdm(
+                backward_starts,
+                desc="CoTracker backward",
+                unit="chunk",
+                dynamic_ncols=True,
+            ):
                 idx_chunk = backward_indices[i : i + chunk_size]
                 chunk_frames = [all_frames_sq[idx] for idx in idx_chunk]
 
-                print(f"  ← Chunk: {idx_chunk[0]} to {idx_chunk[-1]}")
                 t_chunk, v_chunk = self._process_single_chunk(chunk_frames, curr_queries)
 
                 for local_i, global_idx in enumerate(idx_chunk):
@@ -313,16 +329,23 @@ class CoTracker:
                 ).tolist(),
             }
 
-        vis_frames = [
-            self.visualizer.render_frame(
-                frame,
-                tracks,
-                visibility,
-                frame_idx,
-                int(self.cfg.cotracker_viz_trail_len),
+        vis_frames = []
+        for frame_idx, frame in tqdm(
+            enumerate(frames_bgr),
+            total=len(frames_bgr),
+            desc="CoTracker visualization",
+            unit="frame",
+            dynamic_ncols=True,
+        ):
+            vis_frames.append(
+                self.visualizer.render_frame(
+                    frame,
+                    tracks,
+                    visibility,
+                    frame_idx,
+                    int(self.cfg.cotracker_viz_trail_len),
+                )
             )
-            for frame_idx, frame in enumerate(frames_bgr)
-        ]
         document = {
             "method": "cotracker3_offline",
             "ref_sequence_index": int(ref_idx),
