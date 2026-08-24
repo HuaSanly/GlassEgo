@@ -7,11 +7,15 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 from omegaconf import OmegaConf
+from scipy.spatial.transform import Rotation
 
 from data_types.HandsTypes import Hands
 from preprocess.data_types.PhaseTypes import (
     CandidateSegment,
+    NON_OPERATION_MODE,
+    OPERATION_MODE,
     PHASE_NAMES,
+    PHASE_SCHEMA_VERSION,
     PhaseFrame,
     PhaseSequence,
 )
@@ -26,7 +30,7 @@ from preprocess.phase_segmentation.PhaseSegmentationOps import PhaseSegmentation
 
 
 class PhaseSegmentationGenerator:
-    """使用 VIO 与可选手部运动学切割单个数据单元的动作阶段。"""
+    """使用 VIO 和预计算手部证据切割操作/非操作阶段。"""
 
     def __init__(self, unit_dir: str | Path, video_path: str | Path, cfg):
         self.unit_dir = Path(unit_dir).expanduser().resolve()
@@ -65,51 +69,65 @@ class PhaseSegmentationGenerator:
         frame_indices, timestamps, linear_speed, angular_speed, yaw = self._kinematics(
             trajectory.frames
         )
-        stop = PhaseSegmentationOps.compute_stop_mask(
+        operation_cfg = self.cfg.operation
+        feature_window = int(operation_cfg.feature_window_frames)
+        if feature_window < 1:
+            raise ValueError("operation.feature_window_frames must be positive")
+        smoothed_linear = PhaseSegmentationOps.median_filter_values(
             linear_speed,
+            feature_window,
+        )
+        smoothed_angular = PhaseSegmentationOps.median_filter_values(
             angular_speed,
-            float(self.cfg.v_stop_thresh),
-            float(self.cfg.w_stop_thresh),
-            int(self.cfg.stop_hold_frames),
-            int(self.cfg.stop_debounce_frames),
+            feature_window,
         )
-        stop = PhaseSegmentationOps.apply_yaw_veto(
-            stop,
-            yaw,
-            int(self.cfg.stop_min_on_frames),
-            float(self.cfg.stop_yaw_veto_deg),
+        linear_score = PhaseSegmentationOps.sigmoid_score(
+            smoothed_linear,
+            float(operation_cfg.linear_speed_reference_mps),
+            float(operation_cfg.linear_speed_scale_mps),
         )
-        stop = PhaseSegmentationOps.delay_stop_start(
-            stop,
-            int(self.cfg.stop_offset_frames),
+        angular_score = PhaseSegmentationOps.sigmoid_score(
+            smoothed_angular,
+            float(operation_cfg.angular_speed_reference_rad_s),
+            float(operation_cfg.angular_speed_scale_rad_s),
         )
-        mode = PhaseSegmentationOps.compute_modes(
-            stop,
-            linear_speed,
-            angular_speed,
-            float(self.cfg.w_rot_thresh),
-            float(self.cfg.v_rot_max),
-            int(self.cfg.mode_median_window_frames),
-            int(self.cfg.mode_min_run_frames),
-            int(self.cfg.transition_offset_frames),
+        camera_weights = np.asarray(
+            [operation_cfg.linear_weight, operation_cfg.angular_weight],
+            dtype=np.float64,
         )
-
-        hand_refined = False
-        if bool(self.cfg.hand_refinement.enabled) and hands is not None:
-            hand_speed = self._hand_speeds(hands)
-            if np.isfinite(hand_speed).any():
-                mode = PhaseSegmentationOps.refine_stop_with_hand_speed(
-                    mode,
-                    hand_speed,
-                    float(self.cfg.hand_refinement.velocity_threshold_mps),
-                    int(self.cfg.hand_refinement.stable_frames),
-                    int(self.cfg.hand_refinement.boundary_frames),
-                    float(self.cfg.hand_refinement.min_valid_fraction),
-                )
-                hand_refined = True
-        mode = PhaseSegmentationOps.inject_finished(
-            mode,
-            int(self.cfg.finished_frames),
+        if np.any(camera_weights < 0.0) or float(camera_weights.sum()) <= 0.0:
+            raise ValueError("Camera motion weights must be non-negative and non-zero")
+        camera_weights /= camera_weights.sum()
+        camera_motion_score = np.clip(
+            camera_weights[0] * linear_score
+            + camera_weights[1] * angular_score,
+            0.0,
+            1.0,
+        )
+        hand_evidence = self._hand_evidence(
+            hands,
+            len(frame_indices),
+            operation_cfg,
+        )
+        non_operation_score = PhaseSegmentationOps.combine_non_operation_score(
+            camera_motion_score,
+            hand_evidence["presence"],
+            hand_evidence["motion"],
+            hand_evidence["grasp"],
+            hand_evidence["available"],
+            float(operation_cfg.hand_presence_weight),
+            float(operation_cfg.hand_motion_weight),
+            float(operation_cfg.grasp_weight),
+            float(operation_cfg.hand_operation_weight),
+            float(operation_cfg.no_hand_weight),
+        )
+        mode = PhaseSegmentationOps.classify_binary_phases(
+            non_operation_score,
+            float(operation_cfg.non_operation_enter_threshold),
+            float(operation_cfg.non_operation_exit_threshold),
+            int(operation_cfg.non_operation_enter_frames),
+            int(operation_cfg.non_operation_exit_frames),
+            int(operation_cfg.min_non_operation_frames),
         )
 
         frames = tuple(
@@ -117,10 +135,28 @@ class PhaseSegmentationGenerator:
                 frame_idx=int(frame_idx),
                 timestamp_ns=int(timestamp),
                 mode=int(mode[index]),
-                stop=bool(stop[index]),
                 linear_speed_mps=float(linear_speed[index]),
                 angular_speed_rad_s=float(angular_speed[index]),
                 yaw_unwrapped_deg=float(yaw[index]),
+                operation_confidence=float(1.0 - non_operation_score[index]),
+                non_operation_confidence=float(non_operation_score[index]),
+                camera_motion_score=float(camera_motion_score[index]),
+                hand_presence_score=self._optional_score(
+                    hand_evidence["presence"],
+                    hand_evidence["available"],
+                    index,
+                ),
+                hand_motion_score=self._optional_score(
+                    hand_evidence["motion"],
+                    hand_evidence["available"],
+                    index,
+                ),
+                grasp_score=self._optional_score(
+                    hand_evidence["grasp"],
+                    hand_evidence["available"],
+                    index,
+                ),
+                hand_evidence_available=bool(hand_evidence["available"][index]),
             )
             for index, (frame_idx, timestamp) in enumerate(
                 zip(frame_indices, timestamps)
@@ -134,6 +170,7 @@ class PhaseSegmentationGenerator:
         )
         summary = {
             "status": "completed",
+            "schema_version": PHASE_SCHEMA_VERSION,
             "world_frame": ARIA_MPS_WORLD_FRAME,
             "world_origin": ARIA_MPS_WORLD_ORIGIN,
             "initial_heading": ARIA_MPS_INITIAL_HEADING,
@@ -143,11 +180,16 @@ class PhaseSegmentationGenerator:
             "total_frames": len(frames),
             "duration_s": duration_s,
             "raw_vio_pose_coverage": float(trajectory.raw_pose_coverage),
-            "hand_refinement_applied": hand_refined,
+            "hand_evidence_applied": hands is not None,
+            "hand_input_available": bool(hands is not None),
+            "hand_evidence_coverage": float(np.mean(hand_evidence["available"])),
+            "detected_hand_ratio": float(np.mean(hand_evidence["presence"] > 0.0)),
             "mode_counts": {
                 name: int(np.sum(mode == phase))
                 for phase, name in PHASE_NAMES.items()
             },
+            "operation_ratio": float(np.mean(mode == OPERATION_MODE)),
+            "non_operation_ratio": float(np.mean(mode == NON_OPERATION_MODE)),
             "candidate_segment_count": len(candidate_segments),
             "config": OmegaConf.to_container(self.cfg, resolve=True),
         }
@@ -185,34 +227,108 @@ class PhaseSegmentationGenerator:
             if np.any(dt <= 0.0):
                 raise ValueError("VIO timestamps must have a positive interval")
             linear_speed[1:] = np.linalg.norm(np.diff(positions, axis=0), axis=1) / dt
-            angular_speed[1:] = np.abs(np.diff(yaw_rad)) / dt
+            for index, interval in enumerate(dt, start=1):
+                previous_rotation = vio_frames[index - 1].c2w[:3, :3]
+                current_rotation = vio_frames[index].c2w[:3, :3]
+                relative_rotation = previous_rotation.T @ current_rotation
+                angular_speed[index] = Rotation.from_matrix(relative_rotation).magnitude() / interval
         return frame_indices, timestamps, linear_speed, angular_speed, np.degrees(yaw_rad)
 
     @staticmethod
-    def _hand_speeds(hands: Hands) -> np.ndarray:
-        values = np.full(len(hands.hands), np.nan, dtype=np.float64)
+    def _hand_evidence(hands: Hands | None, frame_count: int, cfg) -> dict[str, np.ndarray]:
+        presence = np.zeros(frame_count, dtype=np.float64)
+        motion = np.zeros(frame_count, dtype=np.float64)
+        grasp = np.zeros(frame_count, dtype=np.float64)
+        available = np.zeros(frame_count, dtype=bool)
+        if hands is None:
+            return {
+                "presence": presence,
+                "motion": motion,
+                "grasp": grasp,
+                "available": available,
+            }
+        if len(hands.hands) != frame_count:
+            raise ValueError("Hand evidence and VIO trajectories must have equal lengths")
+
         for index, frame in enumerate(hands.hands):
-            speeds = []
+            available[index] = True
+            missing_probability = 1.0
+            motion_scores = []
+            grasp_scores = []
             for hand in (frame.hand_r, frame.hand_l):
-                if (
-                    hand is None
-                    or hand.midpoint_translation_opt_world is None
-                    or hand.midpoint_lin_vel_opt_world is None
-                ):
+                if hand is None or hand.confidence is None:
                     continue
-                velocity = np.asarray(hand.midpoint_lin_vel_opt_world, dtype=np.float64)
-                if velocity.shape == (3,) and np.all(np.isfinite(velocity)):
-                    speeds.append(float(np.linalg.norm(velocity)))
-            if speeds:
-                values[index] = max(speeds)
-        return values
+                confidence = float(hand.confidence)
+                if not np.isfinite(confidence) or confidence < float(cfg.min_hand_confidence):
+                    continue
+                confidence = float(np.clip(confidence, 0.0, 1.0))
+                missing_probability *= 1.0 - confidence
+                linear_speed = PhaseSegmentationGenerator._max_vector_speed(
+                    hand,
+                    ("midpoint_lin_vel_opt_world", "wrist_lin_vel_opt_world"),
+                )
+                angular_speed = PhaseSegmentationGenerator._max_vector_speed(
+                    hand,
+                    ("midpoint_ang_vel_opt_world", "wrist_ang_vel_opt_world"),
+                )
+                scores = []
+                if linear_speed is not None:
+                    scores.append(
+                        PhaseSegmentationOps.sigmoid_score(
+                            np.asarray([linear_speed]),
+                            float(cfg.hand_linear_speed_reference_mps),
+                            float(cfg.hand_linear_speed_scale_mps),
+                        )[0]
+                    )
+                if angular_speed is not None:
+                    scores.append(
+                        PhaseSegmentationOps.sigmoid_score(
+                            np.asarray([angular_speed]),
+                            float(cfg.hand_angular_speed_reference_rad_s),
+                            float(cfg.hand_angular_speed_scale_rad_s),
+                        )[0]
+                    )
+                if scores:
+                    motion_scores.append(max(scores))
+                if int(hand.grasp_state) == 1:
+                    grasp_scores.append(confidence)
+            presence[index] = 1.0 - missing_probability
+            motion[index] = max(motion_scores, default=0.0)
+            grasp[index] = max(grasp_scores, default=0.0)
+
+        window = int(cfg.feature_window_frames)
+        presence = PhaseSegmentationOps.median_filter_values(presence, window)
+        motion = PhaseSegmentationOps.median_filter_values(motion, window)
+        grasp = PhaseSegmentationOps.median_filter_values(grasp, window)
+        return {
+            "presence": np.clip(presence, 0.0, 1.0),
+            "motion": np.clip(motion, 0.0, 1.0),
+            "grasp": np.clip(grasp, 0.0, 1.0),
+            "available": available,
+        }
+
+    @staticmethod
+    def _max_vector_speed(hand, field_names: tuple[str, ...]) -> float | None:
+        speeds = []
+        for field_name in field_names:
+            value = getattr(hand, field_name, None)
+            if value is None:
+                continue
+            vector = np.asarray(value, dtype=np.float64)
+            if vector.shape == (3,) and np.all(np.isfinite(vector)):
+                speeds.append(float(np.linalg.norm(vector)))
+        return max(speeds) if speeds else None
+
+    @staticmethod
+    def _optional_score(values: np.ndarray, available: np.ndarray, index: int) -> float | None:
+        return float(values[index]) if bool(available[index]) else None
 
     @staticmethod
     def _candidate_segments(frames: tuple[PhaseFrame, ...]) -> list[CandidateSegment]:
         mode = np.asarray([frame.mode for frame in frames], dtype=np.int32)
         segments = []
         for start, end, value in PhaseSegmentationOps.find_segments(mode):
-            if value != 0:
+            if value != OPERATION_MODE:
                 continue
             first = frames[start]
             last = frames[end]
@@ -246,23 +362,67 @@ class PhaseSegmentationGenerator:
         angular_speed = [frame.angular_speed_rad_s for frame in frames]
         yaw = [frame.yaw_unwrapped_deg for frame in frames]
         modes = [frame.mode for frame in frames]
+        operation_cfg = self.cfg.operation
 
-        figure, axes = plt.subplots(4, 1, figsize=(15, 10), sharex=True)
+        camera_score = [frame.camera_motion_score for frame in frames]
+        non_operation_score = [frame.non_operation_confidence for frame in frames]
+        hand_presence = [
+            np.nan if frame.hand_presence_score is None else frame.hand_presence_score
+            for frame in frames
+        ]
+        hand_motion = [
+            np.nan if frame.hand_motion_score is None else frame.hand_motion_score
+            for frame in frames
+        ]
+
+        figure, axes = plt.subplots(5, 1, figsize=(15, 12), sharex=True)
         axes[0].plot(time_s, linear_speed, color="#1976d2", linewidth=1.0)
-        axes[0].axhline(self.cfg.v_stop_thresh, color="#d32f2f", linestyle="--")
+        axes[0].axhline(
+            operation_cfg.linear_speed_reference_mps,
+            color="#d32f2f",
+            linestyle="--",
+        )
         axes[0].set_ylabel("v (m/s)")
         axes[1].plot(time_s, angular_speed, color="#388e3c", linewidth=1.0)
-        axes[1].axhline(self.cfg.w_stop_thresh, color="#d32f2f", linestyle="--")
-        axes[1].axhline(self.cfg.w_rot_thresh, color="#f57c00", linestyle="--")
+        axes[1].axhline(
+            operation_cfg.angular_speed_reference_rad_s,
+            color="#d32f2f",
+            linestyle="--",
+        )
         axes[1].set_ylabel("w (rad/s)")
-        axes[2].plot(time_s, yaw, color="#6a1b9a", linewidth=1.0)
-        axes[2].set_ylabel("yaw (deg)")
-        colors = ["#e0e0e0", "#b3e5fc", "#fff9c4", "#ffccbc", "#c8e6c9"]
-        axes[3].scatter(time_s, modes, c=[colors[mode] for mode in modes], s=4)
-        axes[3].set_yticks(sorted(PHASE_NAMES))
-        axes[3].set_yticklabels([PHASE_NAMES[index] for index in sorted(PHASE_NAMES)])
-        axes[3].set_xlabel("time (s)")
-        axes[3].set_ylabel("phase")
+        axes[2].plot(time_s, camera_score, label="camera", linewidth=1.0)
+        axes[2].plot(time_s, hand_presence, label="hand presence", linewidth=1.0)
+        axes[2].plot(time_s, hand_motion, label="hand motion", linewidth=1.0)
+        axes[2].plot(
+            time_s,
+            non_operation_score,
+            label="non-operation",
+            color="#d32f2f",
+            linewidth=1.2,
+        )
+        axes[2].axhline(
+            operation_cfg.non_operation_enter_threshold,
+            color="#d32f2f",
+            linestyle="--",
+            linewidth=0.8,
+        )
+        axes[2].axhline(
+            operation_cfg.non_operation_exit_threshold,
+            color="#388e3c",
+            linestyle="--",
+            linewidth=0.8,
+        )
+        axes[2].set_ylim(-0.05, 1.05)
+        axes[2].set_ylabel("evidence")
+        axes[2].legend(loc="upper right", ncol=4, fontsize=8)
+        axes[3].plot(time_s, yaw, color="#6a1b9a", linewidth=1.0)
+        axes[3].set_ylabel("yaw (deg)")
+        colors = {OPERATION_MODE: "#c8e6c9", NON_OPERATION_MODE: "#eeeeee"}
+        axes[4].scatter(time_s, modes, c=[colors[mode] for mode in modes], s=4)
+        axes[4].set_yticks(sorted(PHASE_NAMES))
+        axes[4].set_yticklabels([PHASE_NAMES[index] for index in sorted(PHASE_NAMES)])
+        axes[4].set_xlabel("time (s)")
+        axes[4].set_ylabel("phase")
         figure.tight_layout()
         figure.savefig(self.analysis_path, dpi=180)
         plt.close(figure)
@@ -312,14 +472,11 @@ class PhaseSegmentationGenerator:
     def _draw_phase_hud(image_bgr: np.ndarray, frame: PhaseFrame) -> np.ndarray:
         image = image_bgr.copy()
         color = {
-            0: (190, 190, 190),
-            1: (255, 220, 80),
-            2: (80, 220, 255),
-            3: (90, 150, 255),
-            4: (100, 210, 120),
+            OPERATION_MODE: (100, 210, 120),
+            NON_OPERATION_MODE: (190, 190, 190),
         }[frame.mode]
-        cv2.rectangle(image, (12, 12), (285, 118), (20, 20, 20), -1)
-        cv2.rectangle(image, (12, 12), (285, 118), color, 2)
+        cv2.rectangle(image, (12, 12), (285, 142), (20, 20, 20), -1)
+        cv2.rectangle(image, (12, 12), (285, 142), color, 2)
         cv2.putText(image, frame.mode_name, (25, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
         cv2.putText(
             image,
@@ -335,6 +492,16 @@ class PhaseSegmentationGenerator:
             image,
             f"w: {frame.angular_speed_rad_s:.3f} rad/s",
             (25, 97),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            image,
+            f"operation confidence: {frame.operation_confidence:.2f}",
+            (25, 121),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.45,
             (255, 255, 255),

@@ -12,7 +12,7 @@ from omegaconf import OmegaConf
 from tqdm import tqdm
 
 from preprocess.data_types.ObjectTypes import ObjectFrameData, ObjectMaskData, ObjectTrackingResult
-from preprocess.data_types.PhaseTypes import PhaseSequence
+from preprocess.data_types.PhaseTypes import OPERATION_MODE, PhaseSequence
 from preprocess.data_types.VIOTypes import (
     ARIA_MPS_INITIAL_HEADING,
     ARIA_MPS_WORLD_FRAME,
@@ -39,7 +39,7 @@ class ObjectProcessUnit:
 class ObjectTrackingGenerator:
     """按 HumanEgo indices 顺序协调 DINO-SAM 到三角化。"""
 
-    CACHE_VERSION = 3
+    CACHE_VERSION = 4
 
     def __init__(self, unit_dir, cfg, vio_result=None, phase_result=None, dinosam=None, cotracker=None, triangulator=None):
         self.unit_dir = Path(unit_dir).expanduser().resolve()
@@ -241,25 +241,56 @@ class ObjectTrackingGenerator:
             return None
 
     def _build_object_centric_indices(self):
-        phase_frames = {frame.frame_idx: frame for frame in self.phase_result.frames}
-        raw = sorted(idx for idx, frame in phase_frames.items() if frame.mode in (0, 3, 4))
-        if not raw:
-            raise ValueError("Phase result contains no STOP/TRANSITION/FINISHED frames")
-        first_raw = raw[0]
-        all_indices = sorted(phase_frames)
+        operation_frames = self._raw_manipulation_frames()
+        if not operation_frames:
+            raise ValueError("Phase result contains no operation frames")
         max_context = int(self.cfg.indices.object_centric_max_frames)
         min_context = int(self.cfg.indices.object_centric_min_frames)
-        context = [idx for idx in all_indices if idx < first_raw][-max_context:]
-        sequence = list(context)
-        if len(context) < min_context:
-            needed = min_context - len(context)
-            sequence.extend(raw[:needed])
-            if len(sequence) < min_context:
-                raise ValueError("Not enough frames for HumanEgo object-centric sequence")
-        return sequence
+        if max_context < min_context:
+            raise ValueError("object_centric_max_frames must be >= object_centric_min_frames")
+        if len(operation_frames) < min_context:
+            raise ValueError(
+                "Longest operation run is shorter than object-centric minimum: "
+                f"run={len(operation_frames)}, minimum={min_context}"
+            )
+        return operation_frames[:max_context]
 
     def _raw_manipulation_frames(self):
-        return [frame.frame_idx for frame in self.phase_result.frames if frame.mode in (0, 3, 4)]
+        operation_frames = [
+            frame.frame_idx
+            for frame in self.phase_result.frames
+            if frame.mode == OPERATION_MODE
+        ]
+        runs = self._contiguous_runs(operation_frames)
+        if not runs:
+            return []
+        longest_run = max(runs, key=len)
+        configured_limit = OmegaConf.select(
+            self.cfg,
+            "indices.tracking_max_frames",
+            default=None,
+        )
+        if configured_limit is None:
+            return longest_run
+        max_frames = int(configured_limit)
+        if max_frames < 1:
+            raise ValueError("indices.tracking_max_frames must be positive")
+        return longest_run[:max_frames]
+
+    @staticmethod
+    def _contiguous_runs(frame_indices):
+        if not frame_indices:
+            return []
+        runs = []
+        start = previous = int(frame_indices[0])
+        for frame_idx in frame_indices[1:]:
+            frame_idx = int(frame_idx)
+            if frame_idx != previous + 1:
+                runs.append(list(range(start, previous + 1)))
+                start = frame_idx
+            previous = frame_idx
+        runs.append(list(range(start, previous + 1)))
+        return runs
 
     @staticmethod
     def _merge_tracking_frames(object_centric, raw_manipulation):

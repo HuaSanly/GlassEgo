@@ -230,7 +230,7 @@ data/<unit>/
 
 1. **VIO** (`process_vio`): Basalt monocular VIO produces camera poses aligned with video frames
 2. **Hands** (`process_hands`): HaMeR generates 3D hand keypoints per frame with trajectory optimization
-3. **Phases** (`process_phases`): Segments VIO-aligned video into motion phases (STOP/MOVE/TRANSITION)
+3. **Phases** (`process_phases`): Scores VIO and cached hand evidence into binary OPERATION/NON_OPERATION phases
 4. **Objects** (`process_objects`): DINO-SAM + CoTracker for object tracking in phase windows
 
 Each stage validates input types, checks configuration flags (`enabled`), and writes outputs to `data/<unit>/preprocess/<stage>/`.
@@ -294,7 +294,7 @@ Each stage validates input types, checks configuration flags (`enabled`), and wr
 - `trajectory_analysis.json`: 优化结果和统计信息
 
 **阶段分割输出 (`phases/`)：**
-- `phases.json`: 运动阶段标签（STOP/MOVE/TRANSITION）及时间戳
+- `phases.json`: 二值操作/非操作标签、置信度、手部证据及时间戳
 
 **对象跟踪输出 (`objects/`)：**
 - `objects.json`: 跟踪的对象轨迹及 3D 位置

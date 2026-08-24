@@ -8,26 +8,36 @@ from preprocess.data_types.VIOTypes import (
 )
 
 
+OPERATION_MODE = 0
+NON_OPERATION_MODE = 1
 PHASE_NAMES = {
-    0: "STOP",
-    1: "FORWARD",
-    2: "ROTATE",
-    3: "TRANSITION",
-    4: "FINISHED",
+    OPERATION_MODE: "OPERATION",
+    NON_OPERATION_MODE: "NON_OPERATION",
 }
+PHASE_SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)
 class PhaseFrame:
-    """单帧相机运动阶段及其运动学指标。"""
+    """单帧操作阶段、运动学和手部证据。"""
 
     frame_idx: int
     timestamp_ns: int
     mode: int
-    stop: bool
     linear_speed_mps: float
     angular_speed_rad_s: float
     yaw_unwrapped_deg: float
+    operation_confidence: float = 0.0
+    non_operation_confidence: float = 0.0
+    camera_motion_score: float = 0.0
+    hand_presence_score: float | None = None
+    hand_motion_score: float | None = None
+    grasp_score: float | None = None
+    hand_evidence_available: bool = False
+
+    @property
+    def is_operation(self) -> bool:
+        return self.mode == OPERATION_MODE
 
     @property
     def mode_name(self) -> str:
@@ -39,16 +49,34 @@ class PhaseFrame:
             "timestamp_ns": int(self.timestamp_ns),
             "mode": int(self.mode),
             "mode_name": self.mode_name,
-            "stop": bool(self.stop),
+            "phase": self.mode_name,
+            "is_operation": self.is_operation,
             "linear_speed_mps": float(self.linear_speed_mps),
             "angular_speed_rad_s": float(self.angular_speed_rad_s),
             "yaw_unwrapped_deg": float(self.yaw_unwrapped_deg),
+            "operation_confidence": float(self.operation_confidence),
+            "non_operation_confidence": float(self.non_operation_confidence),
+            "camera_motion_score": float(self.camera_motion_score),
+            "hand_presence_score": (
+                None
+                if self.hand_presence_score is None
+                else float(self.hand_presence_score)
+            ),
+            "hand_motion_score": (
+                None
+                if self.hand_motion_score is None
+                else float(self.hand_motion_score)
+            ),
+            "grasp_score": (
+                None if self.grasp_score is None else float(self.grasp_score)
+            ),
+            "hand_evidence_available": bool(self.hand_evidence_available),
         }
 
 
 @dataclass(frozen=True)
 class CandidateSegment:
-    """一个候选静止/操作时间窗口。"""
+    """一个连续操作时间窗口。"""
 
     start_frame_idx: int
     end_frame_idx: int
@@ -77,7 +105,7 @@ class PhaseSequence:
 
     def to_dict(self) -> dict:
         return {
-            "schema_version": 2,
+            "schema_version": PHASE_SCHEMA_VERSION,
             "world_frame": ARIA_MPS_WORLD_FRAME,
             "world_origin": ARIA_MPS_WORLD_ORIGIN,
             "initial_heading": ARIA_MPS_INITIAL_HEADING,

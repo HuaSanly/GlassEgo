@@ -4,6 +4,8 @@ reuse_existing: false
 indices:
   object_centric_max_frames: 60
   object_centric_min_frames: 30
+  # Keep the temporal model input contiguous while bounding memory/runtime.
+  tracking_max_frames: 180
   reference_index: -1
 
 dinosam:

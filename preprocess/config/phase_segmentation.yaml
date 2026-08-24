@@ -1,27 +1,37 @@
 enabled: true
 
-# 0=STOP, 1=FORWARD, 2=ROTATE, 3=TRANSITION, 4=FINISHED.
-v_stop_thresh: 0.03
-w_stop_thresh: 0.15
-stop_hold_frames: 15
-stop_debounce_frames: 8
-stop_min_on_frames: 75
-stop_yaw_veto_deg: 20.0
-stop_offset_frames: 10
+# Hand data is expected to be generated before phase segmentation.
+hand_input:
+  use_cached: true
+  filename: hamer_hands.json
+  required: true
 
-w_rot_thresh: 0.10
-v_rot_max: 0.08
-mode_median_window_frames: 21
-mode_min_run_frames: 30
-transition_offset_frames: 10
-finished_frames: 30
+# The score is heuristic until calibrated against manually labeled clips.
+operation:
+  feature_window_frames: 9
+  linear_speed_reference_mps: 0.10
+  linear_speed_scale_mps: 0.05
+  angular_speed_reference_rad_s: 0.35
+  angular_speed_scale_rad_s: 0.20
+  linear_weight: 0.75
+  angular_weight: 0.25
 
-hand_refinement:
-  enabled: true
-  velocity_threshold_mps: 0.15
-  stable_frames: 5
-  boundary_frames: 10
-  min_valid_fraction: 0.5
+  hand_linear_speed_reference_mps: 0.20
+  hand_linear_speed_scale_mps: 0.20
+  hand_angular_speed_reference_rad_s: 0.50
+  hand_angular_speed_scale_rad_s: 0.40
+  min_hand_confidence: 0.30
+  hand_presence_weight: 0.30
+  hand_motion_weight: 0.45
+  grasp_weight: 0.25
+  hand_operation_weight: 0.30
+  no_hand_weight: 0.35
+
+  non_operation_enter_threshold: 0.60
+  non_operation_exit_threshold: 0.35
+  non_operation_enter_frames: 20
+  non_operation_exit_frames: 10
+  min_non_operation_frames: 25
 
 output:
   export_json: true

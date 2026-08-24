@@ -22,7 +22,7 @@ from utils.utils_media import build_cam_from_disk
 from utils.utils_math import time_it
 from data_types.HandsTypes import Hands
 from preprocess.data_types.ObjectTypes import ObjectTrackingResult
-from preprocess.data_types.PhaseTypes import PhaseSequence
+from preprocess.data_types.PhaseTypes import OPERATION_MODE, PhaseSequence
 from preprocess.data_types.VIOTypes import (
     ARIA_MPS_INITIAL_HEADING,
     ARIA_MPS_WORLD_FRAME,
@@ -93,8 +93,28 @@ class PreprocessPipeline:
             raise FileNotFoundError(f"Video not found: {unit.video_path}")
         if unit.video_path.suffix.lower() not in VIDEO_EXTENSIONS:
             raise ValueError(f"Unsupported video format: {unit.video_path}")
+
         if not self.cfg.hand_tracking.enabled:
-            return None
+            hand_input = OmegaConf.select(
+                self.cfg,
+                "phase_segmentation.hand_input",
+                default={},
+            ) or {}
+            if not bool(hand_input.get("use_cached", False)):
+                return None
+            from hand_tracking.HandCacheLoader import load_cached_hands
+
+            timestamps = [frame.timestamp_ns for frame in vio_result.trajectory.frames]
+            try:
+                return load_cached_hands(
+                    unit.unit_dir,
+                    timestamps,
+                    filename=str(hand_input.get("filename", "hamer_hands.json")),
+                )
+            except FileNotFoundError:
+                if bool(hand_input.get("required", False)):
+                    raise
+                return None
 
         from hand_tracking.HaMeRHandsGenerator import HaMeRHandsGenerator
 
@@ -197,10 +217,10 @@ class PreprocessPipeline:
         if phase_result is None:
             self._write_object_skip_report(unit, "phase result is unavailable", None)
             return None
-        if not any(frame.mode in (0, 3, 4) for frame in phase_result.frames):
+        if not any(frame.mode == OPERATION_MODE for frame in phase_result.frames):
             self._write_object_skip_report(
                 unit,
-                "phase result contains no STOP/TRANSITION/FINISHED frames",
+                "phase result contains no operation frames",
                 prompt_path,
             )
             return None
