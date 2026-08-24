@@ -16,8 +16,6 @@ class HandCandidateDiagnostic:
     bbox_area_px2: float
     bbox_area_ratio: float
     detector_confidence: float
-    hamer_confidence: Optional[float] = None
-    combined_confidence: Optional[float] = None
     final_confidence: Optional[float] = None
     geometry_confidence: Optional[float] = None
     iou_confidence: Optional[float] = None

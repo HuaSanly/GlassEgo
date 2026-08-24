@@ -1,4 +1,4 @@
-enabled: false
+enabled: true
 reuse_existing: false
 
 indices:
@@ -32,7 +32,12 @@ cotracker:
   checkpoint_name: scaled_offline.pth
 
 triangulator:
-  pose_method: pca2
+  pose_method:
+    # Add per-object overrides such as `obj_can: vlm` when semantic pose is needed.
+    obj_can: vlm
+    default: vlm
+  vlm_crop_padding_px: 40
+  vlm_remove_background: true
   step: 1
   smooth_window: 7
   smooth_polyorder: 2

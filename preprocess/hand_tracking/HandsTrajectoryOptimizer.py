@@ -2,8 +2,12 @@
 import numpy as np
 from typing import Optional, List, Tuple, Any
 from scipy.signal import savgol_filter
+from scipy.spatial.transform import Rotation, Slerp
 
-from data_types.HandsTypes import MidpointFrameBuilder, HandData, Hands
+try:
+    from preprocess.data_types.HandsTypes import MidpointFrameBuilder, HandData, Hands
+except ModuleNotFoundError:
+    from data_types.HandsTypes import MidpointFrameBuilder, HandData, Hands
 
 
 class SimpleSmoother:
@@ -172,6 +176,12 @@ class HandsTrajectoryOptimizer:
                 hands = [getattr(fr, hand_attr) for fr in frames]
                 valid_mask = np.array([h is not None for h in hands], dtype=bool)
 
+                # Interpolated detections are created after the per-frame world
+                # conversion, so their world wrist pose is initially missing.
+                # Fill it in world space before any smoothing or differencing.
+                segment_timestamps = aria_hands.tss[s:e] if aria_hands.tss else None
+                self._fill_missing_world_wrist_poses(hands, segment_timestamps)
+
                 # --- 步骤 1：位置平滑 (Savitzky-Golay) ---
                 wrist_pos_raw = self._get_raw_pos_array(hands, "wrist_pose_raw_world")
                 thumb_pos_raw = self._get_raw_pos_array(hands, "thumb_translation_raw_world")
@@ -268,6 +278,95 @@ class HandsTrajectoryOptimizer:
                 val = val[:3, 3]
             res.append(val if val is not None else np.zeros(3))
         return np.array(res)
+
+    @staticmethod
+    def _fill_missing_world_wrist_poses(
+        hands: List[Optional[HandData]],
+        timestamps: Optional[List[int]] = None,
+    ) -> None:
+        """Fill missing wrist world poses with world-space Slerp.
+
+        Short hand gaps are represented by ``HandData`` objects whose camera
+        pose exists but whose world pose was never computed.  Leaving those
+        rotations as the optimizer's identity fallback makes a fixed world
+        basis rotation change the measured angular speed.  Interpolate between
+        the nearest valid world poses instead; at a one-sided gap, carry the
+        nearest continuous pose forward/backward.
+        """
+        known = [
+            index
+            for index, hand in enumerate(hands)
+            if hand is not None and HandsTrajectoryOptimizer._valid_pose(
+                hand.wrist_pose_raw_world
+            )
+        ]
+        if not known:
+            return
+
+        for index, hand in enumerate(hands):
+            if hand is None or HandsTrajectoryOptimizer._valid_pose(
+                hand.wrist_pose_raw_world
+            ):
+                continue
+            if hand.wrist_pose is None:
+                continue
+
+            left = max((candidate for candidate in known if candidate < index), default=None)
+            right = min((candidate for candidate in known if candidate > index), default=None)
+            if left is not None and right is not None:
+                ratio = HandsTrajectoryOptimizer._interpolation_ratio(
+                    index, left, right, timestamps
+                )
+                hand.wrist_pose_raw_world = HandsTrajectoryOptimizer._slerp_pose(
+                    hands[left].wrist_pose_raw_world,
+                    hands[right].wrist_pose_raw_world,
+                    ratio,
+                )
+            elif left is not None:
+                hand.wrist_pose_raw_world = hands[left].wrist_pose_raw_world.copy()
+            elif right is not None:
+                hand.wrist_pose_raw_world = hands[right].wrist_pose_raw_world.copy()
+
+    @staticmethod
+    def _valid_pose(pose: Optional[np.ndarray]) -> bool:
+        if pose is None:
+            return False
+        pose = np.asarray(pose)
+        if pose.shape != (4, 4) or not np.all(np.isfinite(pose)):
+            return False
+        try:
+            Rotation.from_matrix(pose[:3, :3])
+        except ValueError:
+            return False
+        return True
+
+    @staticmethod
+    def _interpolation_ratio(
+        index: int,
+        left: int,
+        right: int,
+        timestamps: Optional[List[int]],
+    ) -> float:
+        if timestamps is not None:
+            left_ts = float(timestamps[left])
+            right_ts = float(timestamps[right])
+            if right_ts > left_ts:
+                return float(np.clip(
+                    (float(timestamps[index]) - left_ts) / (right_ts - left_ts),
+                    0.0,
+                    1.0,
+                ))
+        return float((index - left) / (right - left))
+
+    @staticmethod
+    def _slerp_pose(left: np.ndarray, right: np.ndarray, ratio: float) -> np.ndarray:
+        result = np.eye(4, dtype=np.float64)
+        result[:3, 3] = (1.0 - ratio) * left[:3, 3] + ratio * right[:3, 3]
+        rotations = Rotation.from_matrix(
+            np.stack([left[:3, :3], right[:3, :3]])
+        )
+        result[:3, :3] = Slerp([0.0, 1.0], rotations)([ratio]).as_matrix()[0]
+        return result
 
 
     @staticmethod

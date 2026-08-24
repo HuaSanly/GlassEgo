@@ -39,7 +39,8 @@ diffusers>=0.25
 timm>=0.9
 einops>=0.7
 rembg>=2.0
-onnxruntime-gpu>=1.17
+# 1.27+ PyPI wheels use CUDA 13; keep ONNX Runtime aligned with torch cu121.
+onnxruntime-gpu==1.26.0
 ultralytics>=8.3
 filterpy>=1.4
 ffmpeg-python>=0.2

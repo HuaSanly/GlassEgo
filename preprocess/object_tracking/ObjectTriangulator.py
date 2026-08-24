@@ -3,17 +3,17 @@
 
 """
 ====================================================================================================
-Object Triangulation & PCA Pose Pipeline (ObjectTriangulator.py)
+Object Triangulation & Pose Pipeline (ObjectTriangulator.py)
 ====================================================================================================
 
 Description:
     Convert CoTracker 2D object tracks into 3D object keypoints using VIO camera poses,
-    then estimate a 6-DOF object frame with the HumanEgo PCA branches.
+    then estimate a 6-DOF object frame with the HumanEgo PCA or VLM branches.
 
 Technical Specifics:
     - Multi-view DLT with camera intrinsics removed.
     - Point-only bundle adjustment with Huber loss.
-    - PCA pose estimation with pca1 / pca2 only; VLM / OrientAnything is intentionally excluded.
+    - Per-object pca1 / pca2 / Orient-Anything V2 pose estimation.
 ====================================================================================================
 """
 
@@ -31,14 +31,26 @@ from scipy.optimize import least_squares
 from scipy.signal import savgol_filter
 from tqdm import tqdm
 
+from preprocess.data_types.VIOTypes import (
+    ARIA_MPS_INITIAL_HEADING,
+    ARIA_MPS_WORLD_FRAME,
+    ARIA_MPS_WORLD_ORIGIN,
+    VIOTrajectory,
+)
+from preprocess.object_tracking.OrientAnything import (
+    estimate_frame_vlm,
+    get_crop_from_2d_kpts,
+)
 from utils.utils_vis import draw_glass_rect
 
 
 @dataclass(frozen=True)
 class ObjectTriangulatorConfig:
-    """HumanEgo CamTriangulator PCA 分支默认参数。"""
+    """HumanEgo CamTriangulator 默认参数。"""
 
-    pose_method: str = "pca2"
+    pose_method: str | dict[str, str] = "pca2"
+    vlm_crop_padding_px: int = 40
+    vlm_remove_background: bool = True
     step: int = 1
     smooth_window: int = 7
     smooth_polyorder: int = 2
@@ -279,9 +291,9 @@ class ObjectTriangulatorEngine:
 
 
 class ObjectTriangulator:
-    """Generator 调用的物体 3D 三角化与 PCA 位姿模块。"""
+    """Generator 调用的物体 3D 三角化与位姿模块。"""
 
-    def __init__(self, unit_dir: str | Path, cfg=None):
+    def __init__(self, unit_dir: str | Path, cfg=None, vlm_model=None):
         self.unit_dir = Path(unit_dir).expanduser().resolve()
         self.cfg = cfg if cfg is not None else ObjectTriangulatorConfig()
         self.output_dir = self.unit_dir / "preprocess" / "objects" / "triangulation"
@@ -289,6 +301,7 @@ class ObjectTriangulator:
         self.qa_path = self.output_dir / "object_3d_vis.png"
         self.ply_path = self.output_dir / "object_3d_vis.ply"
         self.engine = ObjectTriangulatorEngine(self.cfg)
+        self.vlm_model = vlm_model
 
     def triangulate(
         self,
@@ -296,7 +309,12 @@ class ObjectTriangulator:
         frames_bgr: list,
         vio_result=None,
     ) -> tuple[dict, np.ndarray]:
-        """把 CoTracker tracks 转为 3D 点云和 PCA 物体位姿。"""
+        """把 CoTracker tracks 转为 3D 点云和物体位姿。"""
+        if (
+            vio_result is not None
+            and vio_result.trajectory.world_frame != ARIA_MPS_WORLD_FRAME
+        ):
+            raise ValueError("Object triangulation requires Aria MPS VIO poses")
         frame_indices = [int(item) for item in tracks_document["frames"]]
         if len(frame_indices) != len(frames_bgr):
             raise ValueError(
@@ -381,11 +399,30 @@ class ObjectTriangulator:
 
             pts_world = np.asarray(points_world, dtype=np.float64)
             pts_cam0 = (R_w2c0 @ pts_world.T + t_w2c0[:, None]).T
+            pose_method = self._pose_method_for_object(obj_key)
+            pose_image = None
+            if pose_method == "vlm":
+                tracks_cam0 = np.asarray(
+                    object_tracks["tracks"][0],
+                    dtype=np.float64,
+                )
+                visibility_cam0 = np.asarray(
+                    object_tracks["visibility"][0],
+                    dtype=np.float64,
+                )
+                pose_image = get_crop_from_2d_kpts(
+                    frames_bgr[0],
+                    tracks_cam0[visibility_cam0 > 0],
+                    pad=int(self.cfg.vlm_crop_padding_px),
+                )
             T_o2c0, info = self._estimate_pose(
-                pts_cam0,
+                pts_cam=pts_cam0,
                 is_anchor=is_anchor,
                 anchor_center_cam=anchor_center_cam,
+                method=pose_method,
+                image=pose_image,
             )
+            info = {"pose_method": pose_method, **info}
             if is_anchor:
                 anchor_center_cam = T_o2c0[:3, 3]
 
@@ -405,9 +442,12 @@ class ObjectTriangulator:
             }
 
         document = {
-            "schema_version": 1,
-            "method": "humanego_camtriangulator_pca",
-            "pose_method": str(self.cfg.pose_method),
+            "schema_version": 3,
+            "world_frame": ARIA_MPS_WORLD_FRAME,
+            "world_origin": ARIA_MPS_WORLD_ORIGIN,
+            "initial_heading": ARIA_MPS_INITIAL_HEADING,
+            "method": "humanego_camtriangulator",
+            "pose_method": self._pose_method_config(),
             "frames": frame_indices,
             "cam0_frame_idx": int(frame_indices[0]),
             "cam0_c2w": cam0_c2w.tolist(),
@@ -433,8 +473,13 @@ class ObjectTriangulator:
         pts_cam: np.ndarray,
         is_anchor: bool,
         anchor_center_cam: np.ndarray | None,
+        method: str | None = None,
+        image=None,
     ) -> tuple[np.ndarray, dict]:
-        method = str(self.cfg.pose_method).lower()
+        if method is None:
+            config = self._pose_method_config()
+            method = config if isinstance(config, str) else config.get("default")
+        method = self._normalize_pose_method(method)
         if method == "pca1":
             return estimate_frame_pca1(
                 pts_cam,
@@ -447,7 +492,52 @@ class ObjectTriangulator:
                 is_anchor=is_anchor,
                 anchor_center_cam=anchor_center_cam,
             )
-        raise ValueError(f"Unsupported object pose method: {self.cfg.pose_method}")
+        if method == "vlm":
+            if image is None:
+                raise ValueError("VLM pose estimation requires an object crop")
+            transform, info = estimate_frame_vlm(
+                image=image,
+                t_cam=pts_cam.mean(axis=0),
+                is_anchor=is_anchor,
+                anchor_center_cam=anchor_center_cam,
+                do_rm_bkg=bool(self.cfg.vlm_remove_background),
+                model=self.vlm_model,
+            )
+            if "error" in info:
+                raise RuntimeError(
+                    f"Orient-Anything inference failed: {info['error']}"
+                )
+            return transform, info
+        raise ValueError(f"Unsupported object pose method: {method}")
+
+    def _pose_method_for_object(self, obj_key: str) -> str:
+        config = self._pose_method_config()
+        if isinstance(config, str):
+            method = config
+        else:
+            method = config.get(obj_key, config.get("default"))
+            if method is None:
+                raise ValueError(
+                    f"No pose method configured for object: {obj_key}"
+                )
+        return self._normalize_pose_method(method)
+
+    @staticmethod
+    def _normalize_pose_method(method) -> str:
+        method = str(method).lower()
+        if method not in {"pca1", "pca2", "vlm"}:
+            raise ValueError(
+                f"Unsupported object pose method: {method}"
+            )
+        return method
+
+    def _pose_method_config(self):
+        config = self.cfg.pose_method
+        if OmegaConf.is_config(config):
+            config = OmegaConf.to_container(config, resolve=True)
+        if not isinstance(config, (str, dict)):
+            raise TypeError("triangulator.pose_method must be a string or mapping")
+        return config
 
     def _smooth_tracks(self, tracks: np.ndarray) -> np.ndarray:
         smooth_window = int(self.cfg.smooth_window)
@@ -501,21 +591,8 @@ class ObjectTriangulator:
         pose_path = self.unit_dir / "preprocess" / "vio" / "poses.json"
         if not pose_path.is_file():
             raise FileNotFoundError(f"VIO poses not found: {pose_path}")
-        with pose_path.open("r", encoding="utf-8") as stream:
-            document = json.load(stream)
-        if document.get("schema_version") != 2:
-            raise ValueError("Unsupported VIO pose schema")
-
-        poses = {}
-        for item in document.get("frames", []):
-            if not item.get("valid", False):
-                continue
-            c2w = np.asarray(item["c2w"], dtype=np.float64)
-            self._validate_transform(c2w, "c2w")
-            poses[int(item["frame_idx"])] = c2w
-        if not poses:
-            raise ValueError("VIO poses contain no valid frames")
-        return poses
+        trajectory = VIOTrajectory.load_json(pose_path)
+        return {frame.frame_idx: frame.c2w for frame in trajectory.frames}
 
     def _draw_qa(self, img_bgr: np.ndarray, w2c: np.ndarray, K: np.ndarray, document: dict):
         def project(p_world):

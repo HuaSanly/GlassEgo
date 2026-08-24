@@ -7,7 +7,14 @@ from pathlib import Path
 
 from omegaconf import OmegaConf
 
-from preprocess.data_types.VIOTypes import VIOResult, VIOTrajectory
+from preprocess.data_types.VIOTypes import (
+    ARIA_MPS_INITIAL_HEADING,
+    ARIA_MPS_WORLD_FRAME,
+    ARIA_MPS_WORLD_ORIGIN,
+    VIO_POSE_SCHEMA_VERSION,
+    VIOResult,
+    VIOTrajectory,
+)
 from preprocess.vio.BasaltAdapter import BasaltAdapter
 from preprocess.vio.SensorSynchronizer import SensorSynchronizer
 from preprocess.vio.VIODataLoader import VIODataLoader
@@ -17,7 +24,7 @@ from preprocess.vio.VIOPoseProcessor import VIOPoseProcessor
 class BasaltVIOGenerator:
     """协调单个数据单元的 Basalt VIO 处理。"""
 
-    CACHE_VERSION = 1
+    CACHE_VERSION = 2
 
     def __init__(self, unit_dir: str | Path, cfg):
         self.unit_dir = Path(unit_dir).expanduser().resolve()
@@ -76,6 +83,16 @@ class BasaltVIOGenerator:
                     basalt_result.trajectory,
                     calibration,
                 )
+                T_world_imu = self.pose_processor.transform_basalt_trajectory(
+                    basalt_result.trajectory,
+                    trajectory.T_world_basalt,
+                )
+                world_trajectory_path = work_dir / "aria_mps_trajectory.csv"
+                self.adapter.write_world_trajectory(
+                    basalt_result.trajectory.timestamps_ns,
+                    T_world_imu,
+                    world_trajectory_path,
+                )
                 report = self._build_report(
                     fingerprint,
                     executable_identity,
@@ -84,7 +101,7 @@ class BasaltVIOGenerator:
                     basalt_result.warnings,
                 )
                 self._atomic_copy(
-                    basalt_result.trajectory_path,
+                    world_trajectory_path,
                     self.trajectory_path,
                 )
                 self._atomic_copy(basalt_result.log_path, self.log_path)
@@ -97,6 +114,10 @@ class BasaltVIOGenerator:
                     "status": "failed",
                     "unit_dir": str(self.unit_dir),
                     "input_fingerprint": fingerprint,
+                    "pose_schema_version": VIO_POSE_SCHEMA_VERSION,
+                    "world_frame": ARIA_MPS_WORLD_FRAME,
+                    "world_origin": ARIA_MPS_WORLD_ORIGIN,
+                    "initial_heading": ARIA_MPS_INITIAL_HEADING,
                     "error": f"{type(exc).__name__}: {exc}",
                     "log": str(self.log_path),
                 },
@@ -157,6 +178,7 @@ class BasaltVIOGenerator:
     def _build_fingerprint(self, executable_identity: dict) -> str:
         digest = hashlib.sha256()
         digest.update(f"glassego-vio-cache-{self.CACHE_VERSION}".encode("utf-8"))
+        digest.update(ARIA_MPS_WORLD_FRAME.encode("utf-8"))
         for path in (
             self.loader.paths.video_path,
             self.loader.paths.camera_csv_path,
@@ -199,6 +221,10 @@ class BasaltVIOGenerator:
             "video_path": str(self.loader.paths.video_path),
             "input_fingerprint": fingerprint,
             "cache_reused": False,
+            "pose_schema_version": VIO_POSE_SCHEMA_VERSION,
+            "world_frame": ARIA_MPS_WORLD_FRAME,
+            "world_origin": ARIA_MPS_WORLD_ORIGIN,
+            "initial_heading": ARIA_MPS_INITIAL_HEADING,
             "basalt_executable": executable_identity,
             "camera_frames": len(sensor_data.camera),
             "imu_samples": len(sensor_data.imu),

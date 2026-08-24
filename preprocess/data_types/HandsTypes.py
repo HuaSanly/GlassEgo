@@ -5,6 +5,13 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, List, Any,Literal
 from numpy.typing import NDArray
 
+from preprocess.data_types.VIOTypes import (
+    ARIA_MPS_INITIAL_HEADING,
+    ARIA_MPS_WORLD_FRAME,
+    ARIA_MPS_WORLD_ORIGIN,
+    OPENCV_CAMERA_FRAME,
+)
+
 
 class MidpointFrameBuilder:
     """
@@ -231,6 +238,10 @@ class Hands:
     tss: List[int] = field(default_factory=list)
     hands: List[HandsData] = field(default_factory=list)
     mps_path: str = None
+    camera_frame: str = OPENCV_CAMERA_FRAME
+    world_frame: str = ARIA_MPS_WORLD_FRAME
+    world_origin: str = ARIA_MPS_WORLD_ORIGIN
+    initial_heading: str = ARIA_MPS_INITIAL_HEADING
 
 
     def __len__(self) -> int:
@@ -248,6 +259,7 @@ class Hands:
 
     def save_aria_hands_json(self) -> None:
         """将所有手部跟踪状态序列化到单独的帧 JSON 文件中。"""
+        self._validate_world_contract()
         for i in range(len(self.tss)):
             frame_dir = os.path.join(self.mps_path, "preprocess", "all_data", f"{i:05d}")
             os.makedirs(frame_dir, exist_ok=True)
@@ -290,7 +302,17 @@ class Hands:
                     "distance_midpoint2wrist_opt_world": h.distance_midpoint2wrist_opt_world
                 }
 
-            json_data = {"idx": data.idx, "ts": data.ts, "hand_r": pack_hand(data.hand_r), "hand_l": pack_hand(data.hand_l)}
+            json_data = {
+                "schema_version": 1,
+                "camera_frame": self.camera_frame,
+                "world_frame": self.world_frame,
+                "world_origin": self.world_origin,
+                "initial_heading": self.initial_heading,
+                "idx": data.idx,
+                "ts": data.ts,
+                "hand_r": pack_hand(data.hand_r),
+                "hand_l": pack_hand(data.hand_l),
+            }
             with open(os.path.join(frame_dir, "aria_hands.json"), 'w') as f:
                 json.dump(json_data, f, indent=4)
 
@@ -302,6 +324,7 @@ class Hands:
         (MediaPipe、WiLoR、HaMeR) 以相同的格式保存结果
         但在不同的文件名下（例如，'mediapipe_hands.json'）。
         """
+        self._validate_world_contract()
         for i in range(len(self.tss)):
             frame_dir = os.path.join(self.mps_path, "preprocess", "all_data", f"{i:05d}")
             os.makedirs(frame_dir, exist_ok=True)
@@ -345,7 +368,27 @@ class Hands:
                     "distance_midpoint2wrist_opt_world": sl(h.distance_midpoint2wrist_opt_world)
                 }
 
-            json_data = {"idx": data.idx, "ts": sl(data.ts), "hand_r": pack_hand(data.hand_r), "hand_l": pack_hand(data.hand_l)}
+            json_data = {
+                "schema_version": 1,
+                "camera_frame": self.camera_frame,
+                "world_frame": self.world_frame,
+                "world_origin": self.world_origin,
+                "initial_heading": self.initial_heading,
+                "idx": data.idx,
+                "ts": sl(data.ts),
+                "hand_r": pack_hand(data.hand_r),
+                "hand_l": pack_hand(data.hand_l),
+            }
             with open(os.path.join(frame_dir, filename), 'w') as f:
                 json.dump(json_data, f, indent=4)
+
+    def _validate_world_contract(self) -> None:
+        if self.camera_frame != OPENCV_CAMERA_FRAME:
+            raise ValueError("Hand output requires the OpenCV camera frame")
+        if self.world_frame != ARIA_MPS_WORLD_FRAME:
+            raise ValueError("Hand output requires the Aria MPS world frame")
+        if self.world_origin != ARIA_MPS_WORLD_ORIGIN:
+            raise ValueError("Hand output requires the Aria MPS world origin")
+        if self.initial_heading != ARIA_MPS_INITIAL_HEADING:
+            raise ValueError("Hand output requires the Aria MPS initial heading")
 

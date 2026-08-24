@@ -358,7 +358,13 @@ class HaMeRHandsGenerator:
 
     def get_hands_data(self)->Hands:
         """完整对外pipeline"""
-        hands = Hands(mps_path=str(self.unit_dir))
+        hands = Hands(
+            mps_path=str(self.unit_dir),
+            camera_frame=self.cam.camera_frame,
+            world_frame=self.cam.world_frame,
+            world_origin=self.cam.world_origin,
+            initial_heading=self.cam.initial_heading,
+        )
         dt = 1.0 / self.cam.fps
 
         for i,cam_data in enumerate(tqdm(self.cam.cam, desc="Hands", mininterval=1.0)):
@@ -411,13 +417,8 @@ class HaMeRHandsGenerator:
                 if hamer_result is not None:
                     kpts_cam = np.asarray(hamer_result['joints_3d'], dtype=np.float32)
                     kpts_2d = np.asarray(hamer_result['joints_2d'], dtype=np.float32)
-                    hamer_confidence = self._clip_score(hamer_result['confidence'])
-                    combined_confidence = self._clip_score(det_confidence * hamer_confidence)
                     if candidate_diagnostic is not None:
                         candidate_diagnostic.hamer_succeeded = True
-                        candidate_diagnostic.hamer_confidence = hamer_confidence
-                        candidate_diagnostic.combined_confidence = combined_confidence
-                        candidate_diagnostic.final_confidence = combined_confidence
 
                     wrist_z = kpts_cam[0,2]  # (4, 4) 相机空间
                     if (
@@ -475,7 +476,6 @@ class HaMeRHandsGenerator:
                         "detection": hand,
                         "kpts_cam": kpts_cam,
                         "kpts_2d": kpts_2d,
-                        "base_confidence": combined_confidence,
                         "geometry_confidence": geometry_confidence,
                         "reprojection_error_px": reprojection_error_px,
                         "positive_depth_ratio": positive_depth_ratio,

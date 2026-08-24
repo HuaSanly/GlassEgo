@@ -13,7 +13,12 @@ from tqdm import tqdm
 
 from preprocess.data_types.ObjectTypes import ObjectFrameData, ObjectMaskData, ObjectTrackingResult
 from preprocess.data_types.PhaseTypes import PhaseSequence
-from preprocess.data_types.VIOTypes import VIOResult
+from preprocess.data_types.VIOTypes import (
+    ARIA_MPS_INITIAL_HEADING,
+    ARIA_MPS_WORLD_FRAME,
+    ARIA_MPS_WORLD_ORIGIN,
+    VIOResult,
+)
 from preprocess.object_tracking.CoTracker import CoTracker
 from preprocess.object_tracking.DINOSAM import DINOSAM
 from preprocess.object_tracking.KptsSelector import KptsSelector
@@ -33,6 +38,8 @@ class ObjectProcessUnit:
 
 class ObjectTrackingGenerator:
     """按 HumanEgo indices 顺序协调 DINO-SAM 到三角化。"""
+
+    CACHE_VERSION = 3
 
     def __init__(self, unit_dir, cfg, vio_result=None, phase_result=None, dinosam=None, cotracker=None, triangulator=None):
         self.unit_dir = Path(unit_dir).expanduser().resolve()
@@ -75,9 +82,14 @@ class ObjectTrackingGenerator:
         """运行 HumanEgo 对象阶段并保存结果。"""
         if self.vio_result is None or self.phase_result is None:
             raise ValueError("VIO and phase results are required")
+        if self.vio_result.trajectory.world_frame != ARIA_MPS_WORLD_FRAME:
+            raise ValueError("Object tracking requires Aria MPS VIO poses")
         object_centric = self._build_object_centric_indices()
         raw_manipulation = self._raw_manipulation_frames()
-        tracking_sequence = object_centric + raw_manipulation
+        tracking_sequence = self._merge_tracking_frames(
+            object_centric,
+            raw_manipulation,
+        )
         reference_position = int(self.cfg.indices.reference_index)
         if reference_position < 0:
             reference_position += len(object_centric)
@@ -112,7 +124,7 @@ class ObjectTrackingGenerator:
                 tracking_sequence,
                 reference_frame,
             )
-            print("║ [Objects] Stage 4/4: 3D triangulation and PCA pose", flush=True)
+            print("║ [Objects] Stage 4/4: 3D triangulation and object pose", flush=True)
             triangulation_report = self._triangulate_objects(
                 tracks_document,
                 images,
@@ -120,6 +132,9 @@ class ObjectTrackingGenerator:
             )
             report = {
                 "status": "completed", "unit_dir": str(self.unit_dir),
+                "world_frame": ARIA_MPS_WORLD_FRAME,
+                "world_origin": ARIA_MPS_WORLD_ORIGIN,
+                "initial_heading": ARIA_MPS_INITIAL_HEADING,
                 "video_path": str(self.unit.video_path), "prompts": self.prompts,
                 "fps": fps, "object_centric_frames": object_centric,
                 "raw_manipulation_frames": raw_manipulation,
@@ -152,6 +167,10 @@ class ObjectTrackingGenerator:
 
     def _build_fingerprint(self, object_centric, raw_manipulation):
         digest = hashlib.sha256()
+        digest.update(
+            f"glassego-object-cache-{self.CACHE_VERSION}".encode("utf-8")
+        )
+        digest.update(ARIA_MPS_WORLD_FRAME.encode("utf-8"))
         for path in (self.unit.video_path, self.unit_dir / "object_prompts.yaml"):
             if path.is_file():
                 digest.update(path.name.encode("utf-8"))
@@ -180,8 +199,26 @@ class ObjectTrackingGenerator:
                 report = json.load(stream)
             if report.get("status") != "completed" or report.get("input_fingerprint") != fingerprint:
                 return None
+            if report.get("world_frame") != ARIA_MPS_WORLD_FRAME:
+                return None
             with self.result_path.open("r", encoding="utf-8") as stream:
                 document = json.load(stream)
+            if (
+                document.get("schema_version") != 2
+                or document.get("world_frame") != ARIA_MPS_WORLD_FRAME
+                or document.get("world_origin") != ARIA_MPS_WORLD_ORIGIN
+                or document.get("initial_heading") != ARIA_MPS_INITIAL_HEADING
+            ):
+                return None
+            with self.triangulation_path.open("r", encoding="utf-8") as stream:
+                triangulation = json.load(stream)
+            if (
+                triangulation.get("schema_version") != 3
+                or triangulation.get("world_frame") != ARIA_MPS_WORLD_FRAME
+                or triangulation.get("world_origin") != ARIA_MPS_WORLD_ORIGIN
+                or triangulation.get("initial_heading") != ARIA_MPS_INITIAL_HEADING
+            ):
+                return None
             frames = []
             for frame in document.get("frames", []):
                 objects = tuple(
@@ -223,6 +260,10 @@ class ObjectTrackingGenerator:
 
     def _raw_manipulation_frames(self):
         return [frame.frame_idx for frame in self.phase_result.frames if frame.mode in (0, 3, 4)]
+
+    @staticmethod
+    def _merge_tracking_frames(object_centric, raw_manipulation):
+        return list(dict.fromkeys(object_centric + raw_manipulation))
 
     def _run_dinosam(self, frame_indices):
         if self.dinosam is None:

@@ -15,7 +15,13 @@ from preprocess.data_types.PhaseTypes import (
     PhaseFrame,
     PhaseSequence,
 )
-from preprocess.data_types.VIOTypes import VIOResult
+from preprocess.data_types.VIOTypes import (
+    ARIA_MPS_INITIAL_HEADING,
+    ARIA_MPS_WORLD_FRAME,
+    ARIA_MPS_WORLD_ORIGIN,
+    ARIA_MPS_YAW_CONVENTION,
+    VIOResult,
+)
 from preprocess.phase_segmentation.PhaseSegmentationOps import PhaseSegmentationOps
 
 
@@ -44,8 +50,12 @@ class PhaseSegmentationGenerator:
             raise FileNotFoundError(f"Video not found: {self.video_path}")
 
         trajectory = vio_result.trajectory
+        if trajectory.world_frame != ARIA_MPS_WORLD_FRAME:
+            raise ValueError("Phase segmentation requires Aria MPS VIO poses")
         if not trajectory.frames:
             raise ValueError("VIO trajectory contains no frames")
+        if hands is not None and hands.world_frame != ARIA_MPS_WORLD_FRAME:
+            raise ValueError("Phase segmentation requires Aria MPS hand poses")
         if hands is not None and len(hands.hands) != len(trajectory.frames):
             raise ValueError(
                 "Hands and VIO trajectories must have the same frame count: "
@@ -124,6 +134,10 @@ class PhaseSegmentationGenerator:
         )
         summary = {
             "status": "completed",
+            "world_frame": ARIA_MPS_WORLD_FRAME,
+            "world_origin": ARIA_MPS_WORLD_ORIGIN,
+            "initial_heading": ARIA_MPS_INITIAL_HEADING,
+            "yaw_convention": ARIA_MPS_YAW_CONVENTION,
             "unit_dir": str(self.unit_dir),
             "video_path": str(self.video_path),
             "total_frames": len(frames),
@@ -158,7 +172,7 @@ class PhaseSegmentationGenerator:
         yaw_rad = np.unwrap(
             np.asarray(
                 [
-                    np.arctan2(frame.c2w[1, 0], frame.c2w[0, 0])
+                    np.arctan2(frame.c2w[0, 2], -frame.c2w[2, 2])
                     for frame in vio_frames
                 ],
                 dtype=np.float64,

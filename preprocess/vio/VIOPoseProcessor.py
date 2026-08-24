@@ -2,8 +2,8 @@ import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
 
 from preprocess.data_types.VIOTypes import (
+    BasaltTrajectory,
     CameraSample,
-    RawTrajectory,
     VIOCalibration,
     VIOFrame,
     VIOTrajectory,
@@ -26,36 +26,36 @@ class VIOPoseProcessor:
     def process(
         self,
         camera: tuple[CameraSample, ...],
-        raw_trajectory: RawTrajectory,
+        raw_trajectory: BasaltTrajectory,
         calibration: VIOCalibration,
     ) -> VIOTrajectory:
         pose_by_timestamp = {
             int(timestamp): transform
             for timestamp, transform in zip(
                 raw_trajectory.timestamps_ns,
-                raw_trajectory.T_world_imu,
+                raw_trajectory.T_basalt_imu,
             )
         }
-        T_world_camera = []
+        T_basalt_camera = []
         interpolated = []
         raw_matches = 0
         for sample in camera:
             if sample.timestamp_ns is None:
                 raise ValueError("Camera timestamp was not synchronized")
-            T_world_imu = pose_by_timestamp.get(sample.timestamp_ns)
+            T_basalt_imu = pose_by_timestamp.get(sample.timestamp_ns)
             is_interpolated = False
-            if T_world_imu is not None:
+            if T_basalt_imu is not None:
                 raw_matches += 1
             else:
-                T_world_imu = self._interpolate_pose(
+                T_basalt_imu = self._interpolate_pose(
                     sample.timestamp_ns,
                     raw_trajectory,
                 )
-                is_interpolated = T_world_imu is not None
-            T_world_camera.append(
+                is_interpolated = T_basalt_imu is not None
+            T_basalt_camera.append(
                 None
-                if T_world_imu is None
-                else T_world_imu @ calibration.T_imu_camera
+                if T_basalt_imu is None
+                else T_basalt_imu @ calibration.T_imu_camera
             )
             interpolated.append(is_interpolated)
 
@@ -66,7 +66,7 @@ class VIOPoseProcessor:
                 f"{raw_coverage:.2%} < {self.min_pose_coverage:.0%}"
             )
         missing_indices = [
-            index for index, pose in enumerate(T_world_camera) if pose is None
+            index for index, pose in enumerate(T_basalt_camera) if pose is None
         ]
         if missing_indices:
             raise RuntimeError(
@@ -74,14 +74,14 @@ class VIOPoseProcessor:
                 f"frames={missing_indices[:10]}"
             )
 
-        normalization = self._world_normalization(T_world_camera)
+        T_world_basalt = self._aria_mps_alignment(T_basalt_camera)
         frames = []
         for sample, pose, is_interpolated in zip(
             camera,
-            T_world_camera,
+            T_basalt_camera,
             interpolated,
         ):
-            normalized_pose = normalization @ pose
+            normalized_pose = T_world_basalt @ pose
             self._validate_transform(normalized_pose)
             frames.append(
                 VIOFrame(
@@ -94,12 +94,13 @@ class VIOPoseProcessor:
         return VIOTrajectory(
             frames=tuple(frames),
             raw_pose_coverage=raw_coverage,
+            T_world_basalt=T_world_basalt,
         )
 
     def _interpolate_pose(
         self,
         timestamp_ns: int,
-        trajectory: RawTrajectory,
+        trajectory: BasaltTrajectory,
     ) -> np.ndarray | None:
         timestamps = trajectory.timestamps_ns
         right = int(np.searchsorted(timestamps, timestamp_ns, side="left"))
@@ -113,14 +114,14 @@ class VIOPoseProcessor:
 
         result = np.eye(4, dtype=np.float64)
         result[:3, 3] = (
-            (1.0 - ratio) * trajectory.T_world_imu[left, :3, 3]
-            + ratio * trajectory.T_world_imu[right, :3, 3]
+            (1.0 - ratio) * trajectory.T_basalt_imu[left, :3, 3]
+            + ratio * trajectory.T_basalt_imu[right, :3, 3]
         )
         rotations = Rotation.from_matrix(
             np.stack(
                 [
-                    trajectory.T_world_imu[left, :3, :3],
-                    trajectory.T_world_imu[right, :3, :3],
+                    trajectory.T_basalt_imu[left, :3, :3],
+                    trajectory.T_basalt_imu[right, :3, :3],
                 ]
             )
         )
@@ -128,21 +129,38 @@ class VIOPoseProcessor:
         return result
 
     @staticmethod
-    def _world_normalization(poses: list[np.ndarray]) -> np.ndarray:
+    def _aria_mps_alignment(poses: list[np.ndarray]) -> np.ndarray:
         first_pose = poses[0]
+        # Basalt aligns +Z with anti-gravity; rotation rows are MPS axes in Basalt.
+        up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
         forward = first_pose[:3, 2].copy()
-        forward[2] = 0.0
+        forward -= up * np.dot(forward, up)
         norm = np.linalg.norm(forward)
         if norm < 1e-8:
             raise ValueError("First camera heading is parallel to the gravity axis")
         forward /= norm
-        yaw = np.arctan2(forward[1], forward[0])
-        rotation = Rotation.from_euler("z", -yaw).as_matrix()
+        backward = -forward
+        right = np.cross(up, backward)
+        right /= np.linalg.norm(right)
+        rotation = np.stack([right, up, backward])
 
-        normalization = np.eye(4, dtype=np.float64)
-        normalization[:3, :3] = rotation
-        normalization[:3, 3] = -rotation @ first_pose[:3, 3]
-        return normalization
+        T_world_basalt = np.eye(4, dtype=np.float64)
+        T_world_basalt[:3, :3] = rotation
+        T_world_basalt[:3, 3] = -rotation @ first_pose[:3, 3]
+        VIOPoseProcessor._validate_transform(T_world_basalt)
+        return T_world_basalt
+
+    @staticmethod
+    def transform_basalt_trajectory(
+        trajectory: BasaltTrajectory,
+        T_world_basalt: np.ndarray,
+    ) -> np.ndarray:
+        VIOPoseProcessor._validate_transform(T_world_basalt)
+        return np.einsum(
+            "ij,njk->nik",
+            T_world_basalt,
+            trajectory.T_basalt_imu,
+        )
 
     @staticmethod
     def _validate_transform(transform: np.ndarray) -> None:

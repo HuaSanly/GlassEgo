@@ -23,7 +23,12 @@ from utils.utils_math import time_it
 from data_types.HandsTypes import Hands
 from preprocess.data_types.ObjectTypes import ObjectTrackingResult
 from preprocess.data_types.PhaseTypes import PhaseSequence
-from preprocess.data_types.VIOTypes import VIOResult
+from preprocess.data_types.VIOTypes import (
+    ARIA_MPS_INITIAL_HEADING,
+    ARIA_MPS_WORLD_FRAME,
+    ARIA_MPS_WORLD_ORIGIN,
+    VIOResult,
+)
 
 @dataclass(frozen=True)
 class ProcessUnit:
@@ -229,6 +234,9 @@ class PreprocessPipeline:
         report = {
             "status": "skipped",
             "unit_dir": str(unit.unit_dir),
+            "world_frame": ARIA_MPS_WORLD_FRAME,
+            "world_origin": ARIA_MPS_WORLD_ORIGIN,
+            "initial_heading": ARIA_MPS_INITIAL_HEADING,
             "reason": reason,
             "prompt_path": str(prompt_path) if prompt_path else None,
         }

@@ -47,6 +47,10 @@ def build_cam_from_disk(
         trajectory_frames = None
         first_ts = 0
         fov = 0.0
+        camera_frame = None
+        world_frame = None
+        world_origin = None
+        initial_heading = None
     else:
         calibration = vio_result.calibration
         if (width, height) != calibration.resolution:
@@ -67,6 +71,10 @@ def build_cam_from_disk(
         trajectory_frames = vio_result.trajectory.frames
         first_ts = trajectory_frames[0].timestamp_ns
         fov = float(np.degrees(2.0 * np.arctan(height / (2.0 * fy))))
+        camera_frame = vio_result.trajectory.camera_frame
+        world_frame = vio_result.trajectory.world_frame
+        world_origin = vio_result.trajectory.world_origin
+        initial_heading = vio_result.trajectory.initial_heading
 
     cam = Cam(
         fps=fps,
@@ -78,6 +86,10 @@ def build_cam_from_disk(
         d=distortion,
         c2d=c2d,
         data_path=str(Path(video_path).resolve().parent),
+        camera_frame=camera_frame,
+        world_frame=world_frame,
+        world_origin=world_origin,
+        initial_heading=initial_heading,
     )
 
     frame_idx = 0

@@ -6,6 +6,13 @@ import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Any
 
+from preprocess.data_types.VIOTypes import (
+    ARIA_MPS_INITIAL_HEADING,
+    ARIA_MPS_WORLD_FRAME,
+    ARIA_MPS_WORLD_ORIGIN,
+    OPENCV_CAMERA_FRAME,
+)
+
 @dataclass
 class CamData:
     """
@@ -67,6 +74,10 @@ class Cam:
     c2d: np.ndarray = None
 
     data_path: str = None
+    camera_frame: str = None
+    world_frame: str = None
+    world_origin: str = None
+    initial_heading: str = None
 
 
     def __len__(self) -> int:
@@ -95,6 +106,7 @@ class Cam:
         参数：
             label (str): 相机流的标识符（例如，'rgb'）。
         """
+        self._validate_world_contract()
         for idx in range(len(self.tss)):
             # 为特定框架定义目录
             frame_dir = os.path.join(self.data_path, "preprocess", "all_data", f"{idx:05d}")
@@ -109,6 +121,11 @@ class Cam:
 
             # 编译每帧元数据
             json_data = {
+                "schema_version": 1,
+                "camera_frame": self.camera_frame,
+                "world_frame": self.world_frame,
+                "world_origin": self.world_origin,
+                "initial_heading": self.initial_heading,
                 "idx": cam.idx,
                 "ts": cam.ts,
                 "fov": cam.fov,
@@ -140,6 +157,11 @@ class Cam:
         """
         save_path = os.path.join(self.data_path, "preprocess", f"aria_cam_{label}_config.json")
         summary_data = {
+            "schema_version": 1,
+            "camera_frame": self.camera_frame,
+            "world_frame": self.world_frame,
+            "world_origin": self.world_origin,
+            "initial_heading": self.initial_heading,
             "total_frames": len(self),
             "fps": self.fps,
             "first_ts": self.first_ts,
@@ -152,6 +174,16 @@ class Cam:
         with open(save_path, 'w') as f:
             json.dump(summary_data, f, indent=4)
         print(f"[***] JSON Summary saved to: {save_path}")
+
+    def _validate_world_contract(self) -> None:
+        if self.camera_frame != OPENCV_CAMERA_FRAME:
+            raise ValueError("Camera output requires the OpenCV camera frame")
+        if self.world_frame != ARIA_MPS_WORLD_FRAME:
+            raise ValueError("Camera output requires the Aria MPS world frame")
+        if self.world_origin != ARIA_MPS_WORLD_ORIGIN:
+            raise ValueError("Camera output requires the Aria MPS world origin")
+        if self.initial_heading != ARIA_MPS_INITIAL_HEADING:
+            raise ValueError("Camera output requires the Aria MPS initial heading")
 
 
     def save_aria_cam_video_orig(self, export_video: bool, export_gif: bool, label: str) -> None:

@@ -4,6 +4,12 @@ from pathlib import Path
 
 import numpy as np
 
+from preprocess.data_types.VIOTypes import (
+    ARIA_MPS_INITIAL_HEADING,
+    ARIA_MPS_WORLD_FRAME,
+    ARIA_MPS_WORLD_ORIGIN,
+)
+
 
 @dataclass(frozen=True)
 class ObjectMaskData:
@@ -65,7 +71,10 @@ class ObjectTrackingResult:
                 return str(path)
 
         return {
-            "schema_version": 1,
+            "schema_version": 2,
+            "world_frame": ARIA_MPS_WORLD_FRAME,
+            "world_origin": ARIA_MPS_WORLD_ORIGIN,
+            "initial_heading": ARIA_MPS_INITIAL_HEADING,
             "unit_dir": ".",
             "video_path": relative_path(self.video_path),
             "output_dir": relative_path(self.output_dir),

@@ -5,6 +5,16 @@ from pathlib import Path
 import numpy as np
 
 
+OPENCV_CAMERA_FRAME = "opencv_x_right_y_down_z_forward"
+ARIA_MPS_WORLD_FRAME = "aria_mps_x_right_y_up_z_backward"
+ARIA_MPS_WORLD_ORIGIN = "first_rgb_camera_center"
+ARIA_MPS_INITIAL_HEADING = (
+    "first_rgb_forward_projected_orthogonal_to_gravity"
+)
+ARIA_MPS_YAW_CONVENTION = "zero_initial_forward_positive_right_about_y"
+VIO_POSE_SCHEMA_VERSION = 3
+
+
 @dataclass(frozen=True)
 class VIOUnitPaths:
     """单个 VIO 处理单元所需的输入路径。"""
@@ -77,11 +87,11 @@ class VIOCalibration:
 
 
 @dataclass(frozen=True)
-class RawTrajectory:
-    """Basalt 输出的 T_world_imu 轨迹。"""
+class BasaltTrajectory:
+    """Basalt 原生世界系中的 IMU 轨迹，仅允许在 VIO 内部使用。"""
 
     timestamps_ns: np.ndarray
-    T_world_imu: np.ndarray
+    T_basalt_imu: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -105,19 +115,25 @@ class VIOFrame:
 class VIOTrajectory:
     frames: tuple[VIOFrame, ...]
     raw_pose_coverage: float
+    T_world_basalt: np.ndarray
     backend: str = "basalt"
-    camera_frame: str = "opencv_x_right_y_down_z_forward"
-    world_frame: str = "first_camera_origin_x_forward_y_left_z_up"
+    camera_frame: str = OPENCV_CAMERA_FRAME
+    world_frame: str = ARIA_MPS_WORLD_FRAME
+    world_origin: str = ARIA_MPS_WORLD_ORIGIN
+    initial_heading: str = ARIA_MPS_INITIAL_HEADING
 
     def to_dict(self) -> dict:
         return {
-            "schema_version": 2,
+            "schema_version": VIO_POSE_SCHEMA_VERSION,
             "backend": self.backend,
             "pose_type": "c2w",
             "timestamp_unit": "ns",
             "time_domain": "android_monotonic_imu_aligned",
             "camera_frame": self.camera_frame,
             "world_frame": self.world_frame,
+            "world_origin": self.world_origin,
+            "initial_heading": self.initial_heading,
+            "T_world_basalt": self.T_world_basalt.tolist(),
             "raw_pose_coverage": self.raw_pose_coverage,
             "frames": [frame.to_dict() for frame in self.frames],
         }
@@ -130,8 +146,22 @@ class VIOTrajectory:
     def load_json(cls, path: str | Path) -> "VIOTrajectory":
         with Path(path).open("r", encoding="utf-8") as stream:
             document = json.load(stream)
-        if document.get("schema_version") != 2:
+        if document.get("schema_version") != VIO_POSE_SCHEMA_VERSION:
             raise ValueError("Unsupported VIO pose schema")
+        if document.get("camera_frame") != OPENCV_CAMERA_FRAME:
+            raise ValueError("Unsupported VIO camera frame")
+        if document.get("world_frame") != ARIA_MPS_WORLD_FRAME:
+            raise ValueError("Unsupported VIO world frame")
+        if document.get("world_origin") != ARIA_MPS_WORLD_ORIGIN:
+            raise ValueError("Unsupported VIO world origin")
+        if document.get("initial_heading") != ARIA_MPS_INITIAL_HEADING:
+            raise ValueError("Unsupported VIO initial heading")
+
+        T_world_basalt = np.asarray(
+            document.get("T_world_basalt"),
+            dtype=np.float64,
+        )
+        _validate_transform(T_world_basalt, "T_world_basalt")
 
         frames = []
         for item in document.get("frames", []):
@@ -153,9 +183,8 @@ class VIOTrajectory:
         return cls(
             frames=tuple(frames),
             raw_pose_coverage=float(document["raw_pose_coverage"]),
+            T_world_basalt=T_world_basalt,
             backend=str(document.get("backend", "basalt")),
-            camera_frame=str(document["camera_frame"]),
-            world_frame=str(document["world_frame"]),
         )
 
 
@@ -171,7 +200,7 @@ class VIOResult:
 
 @dataclass(frozen=True)
 class BasaltRunResult:
-    trajectory: RawTrajectory
+    trajectory: BasaltTrajectory
     trajectory_path: Path
     log_path: Path
     warnings: tuple[str, ...] = field(default_factory=tuple)

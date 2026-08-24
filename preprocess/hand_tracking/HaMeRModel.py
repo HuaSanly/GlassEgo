@@ -113,64 +113,6 @@ class HaMeRModel:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    @staticmethod
-    def _compute_hamer_confidence(
-        pred_kpts_3d_rel: np.ndarray,
-        joints_cam: np.ndarray,
-        joints_2d: np.ndarray,
-        img_w: int,
-        img_h: int,
-        bbox: np.ndarray,
-        scaled_focal_length,
-    ) -> float:
-        """
-        根据重建质量计算 HaMeR 的每次检测置信度。
-
-        使用三个信号：
-          1.深度合理性：手腕Z应为0.1-2.0m
-          2. 2D覆盖：投影关节应覆盖大部分检测bbox
-          3. 3D紧凑性：MANO空间中的手部关键点应具有合理的分布
-
-        返回：对 [0.1, 0.99] 的置信度
-        """
-        try:
-            # 1. 深度合理性（手腕 Z）
-            wrist_z = float(joints_cam[0, 2])
-            if wrist_z < 0.05 or wrist_z > 3.0:
-                return 0.15
-            depth_score = 1.0
-            if wrist_z < 0.1:
-                depth_score = 0.5
-            elif wrist_z > 2.0:
-                depth_score = 0.6
-
-            # 2. 2D 覆盖：关节应跨越 bbox 的合理部分
-            bx1, by1, bx2, by2 = bbox[:4]
-            bbox_w = max(bx2 - bx1, 1.0)
-            bbox_h = max(by2 - by1, 1.0)
-            j2d_valid = joints_2d[(joints_2d[:, 0] > 0) & (joints_2d[:, 1] > 0)]
-            if len(j2d_valid) > 5:
-                j_span_x = j2d_valid[:, 0].max() - j2d_valid[:, 0].min()
-                j_span_y = j2d_valid[:, 1].max() - j2d_valid[:, 1].min()
-                coverage = (j_span_x / bbox_w + j_span_y / bbox_h) / 2.0
-                coverage_score = float(np.clip(coverage, 0.1, 1.0))
-            else:
-                coverage_score = 0.3
-
-            # 3. 3D紧凑性：MANO 手部尺寸应约为0.15-0.25m
-            hand_span = float(np.linalg.norm(
-                pred_kpts_3d_rel.max(axis=0) - pred_kpts_3d_rel.min(axis=0)
-            ))
-            if hand_span < 0.05 or hand_span > 0.5:
-                compact_score = 0.3
-            else:
-                compact_score = 1.0
-
-            confidence = 0.95 * depth_score * coverage_score * compact_score
-            return float(np.clip(confidence, 0.1, 0.99))
-
-        except Exception:
-            return 0.50
     #禁用梯度计算
     @torch.no_grad()
     def predict_from_crop(
@@ -193,7 +135,6 @@ class HaMeRModel:
             字典：
                 'joints_3d': (21, 3) 相机空间 3D 关节（以米为单位）
                 'joints_2d': (21, 2) 以像素坐标投影的 2D 关节
-                'confidence'：浮点重建置信度
             如果推理失败则返回 None。
         """
         if not self.HAMER_AVAILABLE:
@@ -263,22 +204,9 @@ class HaMeRModel:
                 joints_2d[:, 0] = joints_cam[:, 0] / joints_cam[:, 2] * fl + img_w / 2.0
                 joints_2d[:, 1] = joints_cam[:, 1] / joints_cam[:, 2] * fl + img_h / 2.0
 
-            # 置信度：合并模型质量信号。
-            # HaMeR 不输出显式的每个关键点置信度。
-            # 相反，计算基于重投影的质量分数
-            # 3D→2D 投影一致性：比较 joints_2d （来自 HaMeR 3D）
-            # 使用作物 center/size 来衡量预测的效果
-            # 与检测到的边界框匹配。重建损失
-            # 通过关键点分布和深度稳定性提供有用的代理。
-            confidence = self._compute_hamer_confidence(
-                pred_keypoints_3d, joints_cam, joints_2d,
-                img_w, img_h, bbox, scaled_focal_length
-            )
-
             return {
                 'joints_3d': joints_cam.astype(np.float32),
                 'joints_2d': joints_2d.astype(np.float32),
-                'confidence': confidence,
             }
 
         except Exception as e:

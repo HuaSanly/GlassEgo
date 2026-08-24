@@ -1,5 +1,12 @@
 from dataclasses import dataclass
 
+from preprocess.data_types.VIOTypes import (
+    ARIA_MPS_INITIAL_HEADING,
+    ARIA_MPS_WORLD_FRAME,
+    ARIA_MPS_WORLD_ORIGIN,
+    ARIA_MPS_YAW_CONVENTION,
+)
+
 
 PHASE_NAMES = {
     0: "STOP",
@@ -70,7 +77,11 @@ class PhaseSequence:
 
     def to_dict(self) -> dict:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
+            "world_frame": ARIA_MPS_WORLD_FRAME,
+            "world_origin": ARIA_MPS_WORLD_ORIGIN,
+            "initial_heading": ARIA_MPS_INITIAL_HEADING,
+            "yaw_convention": ARIA_MPS_YAW_CONVENTION,
             "phase_names": PHASE_NAMES,
             "frames": [frame.to_dict() for frame in self.frames],
             "candidate_segments": [

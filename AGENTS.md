@@ -31,7 +31,7 @@
 - 作为原始输入和预处理产物的运行时数据根目录，不存放源代码。
 - 每个一级子目录代表一个独立处理单元，例如 `data/1/`。
 - 当前每个处理单元只允许包含一个直属视频文件；可附带 `poses.json`、`pose.json` 或 `camera_poses.json`。
-- 姿态文件当前只会被扫描并登记，尚未接入相机位姿或世界坐标计算。
+- 单元根目录中的兼容姿态文件当前只会被扫描并登记；主流水线的世界位姿由 Basalt VIO 生成并统一转换为 Aria MPS。
 - 预处理产物写入同一单元的 `preprocess/` 子目录，包括逐帧 JSON、分析图和可视化视频。
 - 数据集、视频、模型产物和其他大文件保持 Git 不跟踪；未经用户明确要求，不删除或覆盖已有数据单元。
 
@@ -94,6 +94,14 @@ datacollection/ -> data/<unit>/ -> preprocess/ -> data/<unit>/preprocess/ -> tra
 - 配置由预处理入口统一加载，再通过参数传给下游模块；下游模块不要重复读取全局 YAML。
 - 共享数据契约集中在 `preprocess/data_types/`，生产者与消费者不得各自维护不一致的字段定义。
 - 所有生成文件、缓存目录和 `__pycache__/` 都不属于源码，不要手动编辑或新增到版本控制；仓库中已经被跟踪的历史缓存应另行清理，不在无关任务中顺手删除。
+
+### 坐标系契约
+
+- 唯一持久化世界系为右手 Aria MPS：原点是首帧 RGB 相机光心，`+X` 向右，`+Y` 沿反重力方向向上，`+Z` 指向初始头部朝向的后方。
+- 初始头部朝向使用首帧 RGB 相机 OpenCV `+Z` 光轴在重力水平面上的投影；相机局部坐标仍为 OpenCV `X-right/Y-down/Z-forward`。
+- `c2w` 表示 OpenCV 相机系到 Aria MPS 世界系的变换；所有 `*_world` 点、向量、速度和位姿必须与该 `c2w` 使用同一世界系。
+- Basalt 原生世界系只允许存在于 VIO 内存和临时目录中。`preprocess/vio/poses.json`、`basalt_trajectory.csv` 以及下游世界坐标产物必须声明 `aria_mps_x_right_y_up_z_backward`。
+- 原始 IMU、相机数据和 Kalibr `T_cam_imu` 保持设备原始坐标，不得为了匹配世界系而在采集或标定阶段改轴。
 
 ## 工作流
 

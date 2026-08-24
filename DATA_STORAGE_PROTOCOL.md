@@ -103,7 +103,32 @@ imu:
 - 未完成 IMU 噪声标定时，相关参数可以暂时为 `null`，正式运行 VIO 前再补齐。
 - 采集端保存 IMU 原始坐标，不提前转换到相机坐标系。
 
-## 6. 最小有效性检查
+## 6. 预处理世界坐标系
+
+原始采集数据不定义全局世界坐标。Basalt VIO 完成后，所有持久化世界空间结果统一转换为右手 Aria MPS 坐标系：
+
+- 原点：首帧 RGB 相机光心。
+- `+X`：相对初始头部朝向的右方。
+- `+Y`：反重力方向。
+- `+Z`：初始头部朝向的反方向，即后方。
+- 初始头部朝向：首帧 RGB 相机 OpenCV `+Z` 光轴在重力水平面上的投影。
+
+RGB 相机局部坐标保持 OpenCV `X-right/Y-down/Z-forward`。`c2w` 遵循：
+
+```text
+p_world = c2w @ p_camera
+world_frame = aria_mps_x_right_y_up_z_backward
+```
+
+Basalt 原生世界系只允许作为临时计算结果。`preprocess/vio/basalt_trajectory.csv` 中的 IMU 位姿、`poses.json` 中的相机位姿以及所有下游 `*_world` 字段必须使用同一个 Aria MPS 世界系并带有坐标元数据。旧 schema 或旧世界系结果不得与新结果混用，应通过重新预处理生成。
+
+物体三角化结果 `preprocess/objects/triangulation/object_3d_results.json` 使用
+schema 3，并在顶层声明相同的 `world_frame`、`world_origin` 和 `initial_heading`。
+`pose_method` 可以是全局字符串，也可以是按物体覆盖的映射；允许值为 `pca1`、`pca2`
+或 `vlm`。`vlm` 姿态只负责从首个参考图像裁剪估计物体旋转，物体平移仍来自
+Aria MPS 相机位姿下的多视图三角化。
+
+## 7. 最小有效性检查
 
 一个数据单元至少应通过以下检查：
 
@@ -111,10 +136,11 @@ imu:
 2. `frame_idx` 连续，相机时间戳单调递增。
 3. 每种 IMU 的 `sequence` 和 `timestamp_ns` 单调递增。
 4. 标定分辨率与视频一致，IMU 时间范围覆盖整个视频。
+5. 持久化 VIO 和下游世界坐标产物声明 `aria_mps_x_right_y_up_z_backward`。
 
 RTP 时间戳、MP4 PTS、主机接收时间和 Unix 时间可以用于采集过程中的调试与帧配对，但完成 `camera.csv` 后不属于长期数据协议。
 
-## 7. 参考格式
+## 8. 参考格式
 
 - [Kalibr bag format](https://github.com/ethz-asl/kalibr/wiki/bag-format)
 - [Kalibr YAML formats](https://github.com/ethz-asl/kalibr/wiki/yaml-formats)

@@ -6,7 +6,7 @@
 data/
 tem_data/
 models/
-
+tests/
 # Python bytecode and caches
 __pycache__/
 *.py[cod]

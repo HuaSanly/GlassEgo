@@ -9,8 +9,11 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from preprocess.data_types.VIOTypes import (
+    ARIA_MPS_INITIAL_HEADING,
+    ARIA_MPS_WORLD_FRAME,
+    ARIA_MPS_WORLD_ORIGIN,
+    BasaltTrajectory,
     BasaltRunResult,
-    RawTrajectory,
     SynchronizedSensorData,
     VIOCalibration,
 )
@@ -326,7 +329,7 @@ class BasaltAdapter:
         return []
 
     @staticmethod
-    def _parse_trajectory(trajectory_path: Path) -> RawTrajectory:
+    def _parse_trajectory(trajectory_path: Path) -> BasaltTrajectory:
         if not trajectory_path.is_file() or trajectory_path.stat().st_size == 0:
             raise FileNotFoundError(f"Basalt trajectory not found: {trajectory_path}")
 
@@ -373,10 +376,54 @@ class BasaltAdapter:
         timestamps_array = np.asarray(timestamps, dtype=np.int64)
         if np.any(np.diff(timestamps_array) <= 0):
             raise ValueError("Basalt trajectory timestamps must be strictly increasing")
-        return RawTrajectory(
+        return BasaltTrajectory(
             timestamps_ns=timestamps_array,
-            T_world_imu=np.stack(transforms),
+            T_basalt_imu=np.stack(transforms),
         )
+
+    @staticmethod
+    def write_world_trajectory(
+        timestamps_ns: np.ndarray,
+        T_world_imu: np.ndarray,
+        path: Path,
+    ) -> None:
+        if T_world_imu.shape != (len(timestamps_ns), 4, 4):
+            raise ValueError("World IMU trajectory has an invalid shape")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.writer(stream, lineterminator="\n")
+            writer.writerow([f"#world_frame={ARIA_MPS_WORLD_FRAME}"])
+            writer.writerow([f"#world_origin={ARIA_MPS_WORLD_ORIGIN}"])
+            writer.writerow([f"#initial_heading={ARIA_MPS_INITIAL_HEADING}"])
+            writer.writerow(
+                [
+                    "#timestamp [ns]",
+                    "p_RS_R_x [m]",
+                    "p_RS_R_y [m]",
+                    "p_RS_R_z [m]",
+                    "q_RS_w []",
+                    "q_RS_x []",
+                    "q_RS_y []",
+                    "q_RS_z []",
+                ]
+            )
+            for timestamp_ns, transform in zip(timestamps_ns, T_world_imu):
+                if transform.shape != (4, 4) or not np.all(np.isfinite(transform)):
+                    raise ValueError("World IMU trajectory contains an invalid pose")
+                quaternion_xyzw = Rotation.from_matrix(
+                    transform[:3, :3]
+                ).as_quat()
+                translation = transform[:3, 3]
+                writer.writerow(
+                    [
+                        int(timestamp_ns),
+                        *(f"{value:.18e}" for value in translation),
+                        f"{quaternion_xyzw[3]:.18e}",
+                        f"{quaternion_xyzw[0]:.18e}",
+                        f"{quaternion_xyzw[1]:.18e}",
+                        f"{quaternion_xyzw[2]:.18e}",
+                    ]
+                )
 
     @staticmethod
     def _to_ros_time(Time, timestamp_ns: int):

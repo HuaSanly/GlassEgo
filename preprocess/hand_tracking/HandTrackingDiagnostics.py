@@ -450,7 +450,6 @@ class HandTrackingDiagnostics:
     def _confidence_distributions(self, ground_truth: dict) -> dict:
         fields = (
             "detector_confidence",
-            "hamer_confidence",
             "final_confidence",
             "geometry_confidence",
             "iou_confidence",
@@ -518,14 +517,13 @@ class HandTrackingDiagnostics:
 
         fields = (
             ("detector_confidence", "Detector confidence"),
-            ("hamer_confidence", "HaMeR confidence"),
             ("final_confidence", "Final confidence"),
             ("geometry_confidence", "Geometry confidence"),
             ("iou_confidence", "IoU confidence"),
             ("position_confidence", "Position confidence"),
             ("rotation_confidence", "Rotation confidence"),
         )
-        figure, axes = plt.subplots(3, 3, figsize=(15, 12))
+        figure, axes = plt.subplots(2, 3, figsize=(15, 8))
         axes = axes.reshape(-1)
         try:
             for axis, (field_name, title) in zip(axes, fields):
@@ -672,11 +670,6 @@ class HandTrackingDiagnostics:
             color = colors.get(candidate.side, (180, 180, 180))
             x1, y1, x2, y2 = [int(round(value)) for value in candidate.bbox]
             cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
-            hamer = (
-                f"{candidate.hamer_confidence:.2f}"
-                if candidate.hamer_confidence is not None
-                else "-"
-            )
             final = (
                 f"{candidate.final_confidence:.2f}"
                 if candidate.final_confidence is not None
@@ -696,7 +689,7 @@ class HandTrackingDiagnostics:
                 flags += " SEL"
             lines = (
                 f"{candidate.side[0].upper()}#{candidate.candidate_idx} "
-                f"d={candidate.detector_confidence:.2f} h={hamer} f={final}",
+                f"d={candidate.detector_confidence:.2f} f={final}",
                 f"kp={valid} box={candidate.bbox_width_px:.0f}x"
                 f"{candidate.bbox_height_px:.0f}{flags}",
             )

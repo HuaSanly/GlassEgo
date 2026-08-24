@@ -318,9 +318,9 @@ fi
 echo ""
 info "=== HumanEgo Modules ==="
 cd "$PROJECT_ROOT"
-check_import "preprocess.OrientAnything"  "from preprocess.OrientAnything import estimate_frame_pca1, estimate_frame_vlm, ORIENT_ANYTHING_AVAILABLE; assert ORIENT_ANYTHING_AVAILABLE"
+check_import "object OrientAnything"       "from preprocess.object_tracking.OrientAnything import estimate_frame_pca1, estimate_frame_vlm, ORIENT_ANYTHING_AVAILABLE; assert ORIENT_ANYTHING_AVAILABLE"
 check_import "utils.utils_math"           "from utils.utils_math import rotmat_to_o6d, normalize_o6d"
-check_import "utils.utils_io"             "from utils.utils_io import load_cfg"
+check_import "object triangulator"         "from preprocess.object_tracking.ObjectTriangulator import ObjectTriangulator"
 
 # ==============================================================================
 # Optional: 预下载模型权重
