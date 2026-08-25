@@ -17,12 +17,15 @@ from preprocess.data_types.VIOTypes import (
     ARIA_MPS_INITIAL_HEADING,
     ARIA_MPS_WORLD_FRAME,
     ARIA_MPS_WORLD_ORIGIN,
+    OPENCV_CAMERA_FRAME,
     VIOResult,
 )
 from preprocess.object_tracking.CoTracker import CoTracker
 from preprocess.object_tracking.DINOSAM import DINOSAM
 from preprocess.object_tracking.KptsSelector import KptsSelector
 from preprocess.object_tracking.ObjectTriangulator import ObjectTriangulator
+from preprocess.object_tracking.ObjectPosePropagator import ObjectPosePropagator
+from preprocess.object_tracking.ObjectPoseQA import ObjectPoseQAExporter
 from utils.utils_math import time_it
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v"}
@@ -39,19 +42,31 @@ class ObjectProcessUnit:
 class ObjectTrackingGenerator:
     """按 HumanEgo indices 顺序协调 DINO-SAM 到三角化。"""
 
-    CACHE_VERSION = 4
+    CACHE_VERSION = 5
 
-    def __init__(self, unit_dir, cfg, vio_result=None, phase_result=None, dinosam=None, cotracker=None, triangulator=None):
+    def __init__(
+        self,
+        unit_dir,
+        cfg,
+        vio_result=None,
+        phase_result=None,
+        dinosam=None,
+        cotracker=None,
+        triangulator=None,
+        hands=None,
+    ):
         self.unit_dir = Path(unit_dir).expanduser().resolve()
         self.cfg = cfg
         self.unit = self._build_unit(self.unit_dir)
         self.vio_result = vio_result
         self.phase_result = phase_result
+        self.hands = hands
         self.prompts = dict(OmegaConf.select(cfg, "prompts", default={}) or {})
         if not self.prompts:
             raise ValueError("Object prompts are required")
         self.output_dir = self.unit_dir / "preprocess" / "objects"
         self.all_data_dir = self.output_dir / "all_data"
+        self.training_data_dir = self.unit_dir / "preprocess" / "all_data"
         self.vis_dir = self.output_dir / "vis"
         self.dinosam_video_path = self.vis_dir / "dinosam_vis.mp4"
         self.cotracker_video_path = self.vis_dir / "cotracker_vis.mp4"
@@ -66,6 +81,10 @@ class ObjectTrackingGenerator:
         self.triangulation_path = self.triangulation_dir / "object_3d_results.json"
         self.triangulation_qa_path = self.triangulation_dir / "object_3d_vis.png"
         self.triangulation_ply_path = self.triangulation_dir / "object_3d_vis.ply"
+        self.pose_dir = self.output_dir / "poses"
+        self.object_pose_path = self.pose_dir / "object_poses.json"
+        self.object_centric_ply_path = self.pose_dir / "object_centric.ply"
+        self.object_centric_png_path = self.pose_dir / "object_centric.png"
         self.dinosam = dinosam
         self.cotracker = cotracker
         self.triangulator = triangulator
@@ -130,6 +149,33 @@ class ObjectTrackingGenerator:
                 images,
                 object_centric,
             )
+            triangulation_document = triangulation_report.pop("document")
+            pose_document = self._propagate_object_poses(
+                triangulation_document,
+                raw_manipulation,
+            )
+            training_report = self._write_training_data(
+                pose_document,
+                triangulation_document,
+                frame_data,
+                images,
+                fps,
+            )
+            qa_report = ObjectPoseQAExporter(self.pose_dir).export(
+                triangulation_document,
+                pose_document,
+            )
+            triangulation_report["object_poses"] = {
+                "frames": pose_document["frame_count"],
+                "dynamic_frames": pose_document["dynamic_frame_count"],
+                "path": self._relative_path(self.object_pose_path),
+            }
+            triangulation_report["training_data"] = training_report
+            triangulation_report["object_centric_qa"] = {
+                **qa_report,
+                "ply": self._relative_path(qa_report["ply"]),
+                "png": self._relative_path(qa_report["png"]),
+            }
             report = {
                 "status": "completed", "unit_dir": str(self.unit_dir),
                 "world_frame": ARIA_MPS_WORLD_FRAME,
@@ -147,6 +193,14 @@ class ObjectTrackingGenerator:
                     "tracks": self._relative_path(self.tracks_path),
                     "cotracker_video": self._relative_path(self.cotracker_video_path),
                     "triangulation": self._relative_path(self.triangulation_path),
+                    "object_poses": self._relative_path(self.object_pose_path),
+                    "training_data": training_report["path"],
+                    "object_centric_ply": self._relative_path(
+                        self.object_centric_ply_path
+                    ),
+                    "object_centric_png": self._relative_path(
+                        self.object_centric_png_path
+                    ),
                 },
                 "reference_frame": reference_frame,
                 "keypoints": keypoint_report, "tracks": tracks_report, "triangulation": triangulation_report,
@@ -181,6 +235,7 @@ class ObjectTrackingGenerator:
             "object_centric": object_centric,
             "raw_manipulation": raw_manipulation,
             "phase_summary": self.phase_result.summary,
+            "hands": self._hands_fingerprint(),
         }).encode("utf-8"))
         digest.update(json.dumps(OmegaConf.to_container(self.cfg, resolve=True), sort_keys=True).encode("utf-8"))
         digest.update(json.dumps([
@@ -190,8 +245,41 @@ class ObjectTrackingGenerator:
         ], sort_keys=True).encode("utf-8"))
         return digest.hexdigest()
 
+    def _hands_fingerprint(self):
+        if self.hands is None:
+            return None
+        values = []
+        for item in self.hands.hands:
+            sides = {}
+            for side, hand in (("left", item.hand_l), ("right", item.hand_r)):
+                if hand is None:
+                    sides[side] = None
+                    continue
+                pose = hand.midpoint_pose_opt_world
+                if pose is None:
+                    pose = hand.midpoint_pose_raw_world
+                sides[side] = {
+                    "confidence": (
+                        None
+                        if hand.confidence is None
+                        else float(hand.confidence)
+                    ),
+                    "grasp": int(hand.grasp_state or 0),
+                    "pose": np.asarray(pose).tolist() if pose is not None else None,
+                }
+            values.append({"idx": int(item.idx), "sides": sides})
+        return values
+
     def _load_cached_result(self, fingerprint):
-        required = (self.result_path, self.report_path, self.tracks_path, self.triangulation_path)
+        required = (
+            self.result_path,
+            self.report_path,
+            self.tracks_path,
+            self.triangulation_path,
+            self.object_pose_path,
+            self.object_centric_ply_path,
+            self.object_centric_png_path,
+        )
         if not all(path.is_file() and path.stat().st_size > 0 for path in required):
             return None
         try:
@@ -219,6 +307,35 @@ class ObjectTrackingGenerator:
                 or triangulation.get("initial_heading") != ARIA_MPS_INITIAL_HEADING
             ):
                 return None
+            with self.object_pose_path.open("r", encoding="utf-8") as stream:
+                object_poses = json.load(stream)
+            if (
+                object_poses.get("schema_version") != 1
+                or object_poses.get("world_frame") != ARIA_MPS_WORLD_FRAME
+                or object_poses.get("world_origin") != ARIA_MPS_WORLD_ORIGIN
+                or object_poses.get("initial_heading") != ARIA_MPS_INITIAL_HEADING
+            ):
+                return None
+            for item in object_poses.get("frames", []):
+                training_path = (
+                    self.training_data_dir
+                    / f"{int(item['frame_idx']):05d}"
+                    / "training_data.json"
+                )
+                if not training_path.is_file() or training_path.stat().st_size == 0:
+                    return None
+                with training_path.open("r", encoding="utf-8") as stream:
+                    training_data = json.load(stream)
+                if (
+                    training_data.get("schema_version") != 1
+                    or training_data.get("world_frame") != ARIA_MPS_WORLD_FRAME
+                    or training_data.get("world_origin") != ARIA_MPS_WORLD_ORIGIN
+                    or training_data.get("initial_heading")
+                    != ARIA_MPS_INITIAL_HEADING
+                ):
+                    return None
+            if not object_poses.get("frames") or object_poses.get("anchor_key") is None:
+                return None
             frames = []
             for frame in document.get("frames", []):
                 objects = tuple(
@@ -241,41 +358,36 @@ class ObjectTrackingGenerator:
             return None
 
     def _build_object_centric_indices(self):
-        operation_frames = self._raw_manipulation_frames()
-        if not operation_frames:
+        raw_manipulation = self._raw_manipulation_frames()
+        if not raw_manipulation:
             raise ValueError("Phase result contains no operation frames")
         max_context = int(self.cfg.indices.object_centric_max_frames)
         min_context = int(self.cfg.indices.object_centric_min_frames)
         if max_context < min_context:
             raise ValueError("object_centric_max_frames must be >= object_centric_min_frames")
-        if len(operation_frames) < min_context:
+        all_frames = sorted({int(frame.frame_idx) for frame in self.phase_result.frames})
+        first_manipulation = raw_manipulation[0]
+        pre_operation = [
+            frame_idx for frame_idx in all_frames if frame_idx < first_manipulation
+        ][-max_context:]
+        object_centric = list(pre_operation)
+        if len(object_centric) < min_context:
+            needed = min_context - len(object_centric)
+            object_centric.extend(raw_manipulation[:needed])
+        object_centric = list(dict.fromkeys(object_centric))
+        if len(object_centric) < min_context:
             raise ValueError(
-                "Longest operation run is shorter than object-centric minimum: "
-                f"run={len(operation_frames)}, minimum={min_context}"
+                "Not enough frames for object-centric context: "
+                f"available={len(object_centric)}, minimum={min_context}"
             )
-        return operation_frames[:max_context]
+        return object_centric
 
     def _raw_manipulation_frames(self):
-        operation_frames = [
-            frame.frame_idx
+        return sorted({
+            int(frame.frame_idx)
             for frame in self.phase_result.frames
             if frame.mode == OPERATION_MODE
-        ]
-        runs = self._contiguous_runs(operation_frames)
-        if not runs:
-            return []
-        longest_run = max(runs, key=len)
-        configured_limit = OmegaConf.select(
-            self.cfg,
-            "indices.tracking_max_frames",
-            default=None,
-        )
-        if configured_limit is None:
-            return longest_run
-        max_frames = int(configured_limit)
-        if max_frames < 1:
-            raise ValueError("indices.tracking_max_frames must be positive")
-        return longest_run[:max_frames]
+        })
 
     @staticmethod
     def _contiguous_runs(frame_indices):
@@ -497,7 +609,151 @@ class ObjectTrackingGenerator:
                 for key, value in document["objects"].items()
             },
             "path": self._relative_path(self.triangulation_path),
+            "document": document,
         }
+
+    def _propagate_object_poses(self, triangulation_document, frame_indices):
+        cfg = OmegaConf.select(self.cfg, "pose_propagation", default=None)
+        document = ObjectPosePropagator(cfg).propagate(
+            triangulation_document,
+            list(frame_indices),
+            self.vio_result,
+            self.hands,
+        )
+        self._atomic_write_json(self.object_pose_path, document)
+        return document
+
+    def _write_training_data(
+        self,
+        pose_document,
+        triangulation_document,
+        frame_data,
+        images,
+        fps,
+    ):
+        frame_data_by_idx = {int(frame.frame_idx): frame for frame in frame_data}
+        image_by_idx = {
+            int(frame.frame_idx): image
+            for frame, image in zip(frame_data, images)
+        }
+        vio_by_idx = {
+            int(frame.frame_idx): frame
+            for frame in self.vio_result.trajectory.frames
+        }
+        fx, fy, cx, cy = np.asarray(
+            self.vio_result.calibration.intrinsics,
+            dtype=np.float64,
+        )
+        camera_intrinsics = [
+            [float(fx), 0.0, float(cx)],
+            [0.0, float(fy), float(cy)],
+            [0.0, 0.0, 1.0],
+        ]
+        width, height = self.vio_result.calibration.resolution
+        object_local_points = self._object_local_points(triangulation_document)
+        for pose_frame in pose_document["frames"]:
+            frame_idx = int(pose_frame["frame_idx"])
+            detection = frame_data_by_idx[frame_idx]
+            c2w = vio_by_idx[frame_idx].c2w.tolist()
+            frame_dir = self.training_data_dir / f"{frame_idx:05d}"
+            rgb_path = frame_dir / "rgb.png"
+            frame_dir.mkdir(parents=True, exist_ok=True)
+            if not cv2.imwrite(str(rgb_path), image_by_idx[frame_idx]):
+                raise RuntimeError(f"Unable to write training RGB frame: {rgb_path}")
+            hands = {
+                side: {
+                    "T_hand_to_world": value["T_hand_to_world"],
+                    "grasp": value["grasp"],
+                }
+                for side, value in pose_frame["hands"].items()
+                if value["T_hand_to_world"] is not None
+            }
+            object_keypoints = self._transform_object_points(
+                object_local_points,
+                pose_frame["objects"],
+            )
+            output = {
+                "schema_version": 1,
+                "world_frame": ARIA_MPS_WORLD_FRAME,
+                "world_origin": ARIA_MPS_WORLD_ORIGIN,
+                "initial_heading": ARIA_MPS_INITIAL_HEADING,
+                "metadata": {
+                    "idx": frame_idx,
+                    "ts": int(pose_frame["timestamp_ns"]),
+                    "timestamp_ns": int(pose_frame["timestamp_ns"]),
+                    "w": int(width),
+                    "h": int(height),
+                    "fps": float(fps),
+                    "k": camera_intrinsics,
+                    "camera_frame": OPENCV_CAMERA_FRAME,
+                    "c2w": c2w,
+                    "camera_intrinsics": camera_intrinsics,
+                    "anchor_key": pose_document["anchor_key"],
+                    "is_finished": 0.0,
+                    "world_transforms": {
+                        "cam0": pose_document["cam0_c2w"],
+                        "virtual_static_anchor": pose_document["anchor_to_world"],
+                        "camera_to_world": c2w,
+                        "anchor_to_world": pose_document["anchor_to_world"],
+                        "world_to_anchor": pose_document["world_to_anchor"],
+                    },
+                },
+                "obs": {
+                    "rgb_path": str(rgb_path),
+                    "mask_arm_path": str(
+                        detection.combined_mask_path.parent / "mask_arm.png"
+                    ),
+                    "mask_obj_path": str(detection.combined_mask_path),
+                    "source_video_path": str(self.unit.video_path),
+                    "source_frame_idx": frame_idx,
+                    "object_masks": {
+                        item.key: str(item.mask_path)
+                        for item in detection.objects
+                        if item.key.startswith("obj")
+                    },
+                    "objects_kpts": object_keypoints,
+                },
+                "entities": {
+                    "hands": hands,
+                    "objects": pose_frame["objects"],
+                },
+            }
+            path = frame_dir / "training_data.json"
+            self._atomic_write_json(path, output)
+        return {
+            "frames": int(pose_document["frame_count"]),
+            "path": self._relative_path(self.training_data_dir),
+            "filename": "training_data.json",
+        }
+
+    @staticmethod
+    def _object_local_points(triangulation_document):
+        local_points = {}
+        for key, value in triangulation_document["objects"].items():
+            points_world = np.asarray(value["points_3d_world"], dtype=np.float64)
+            object_to_world = np.asarray(
+                value["object_to_world_matrix"],
+                dtype=np.float64,
+            )
+            world_to_object = np.linalg.inv(object_to_world)
+            local_points[key] = (
+                world_to_object[:3, :3] @ points_world.T
+            ).T + world_to_object[:3, 3]
+        return local_points
+
+    @staticmethod
+    def _transform_object_points(local_points, frame_objects):
+        result = {}
+        for key, points in local_points.items():
+            object_to_world = np.asarray(
+                frame_objects[key]["T_obj_to_world"],
+                dtype=np.float64,
+            )
+            points_world = (
+                object_to_world[:3, :3] @ points.T
+            ).T + object_to_world[:3, 3]
+            result[key] = {"world": points_world.tolist()}
+        return result
 
     @staticmethod
     def _build_unit(unit_dir):

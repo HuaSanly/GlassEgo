@@ -58,8 +58,7 @@ class PreprocessPipeline:
                 vio_result = self.process_vio(unit)
                 hands = self.process_hands(unit, vio_result)
                 phase_result = self.process_phases(unit, vio_result, hands)
-                hands = None
-                self.process_objects(unit, vio_result, phase_result)
+                self.process_objects(unit, vio_result, phase_result, hands)
             finally:
                 hands = None
                 phase_result = None
@@ -193,6 +192,7 @@ class PreprocessPipeline:
         unit: ProcessUnit,
         vio_result: VIOResult,
         phase_result: PhaseSequence | None,
+        hands: Hands | None = None,
     ) -> ObjectTrackingResult | None:
         """按 HumanEgo 阶段窗口运行物体识别与三角化。"""
         if not isinstance(unit, ProcessUnit):
@@ -201,6 +201,8 @@ class PreprocessPipeline:
             raise TypeError("vio_result must be a VIOResult")
         if phase_result is not None and not isinstance(phase_result, PhaseSequence):
             raise TypeError("phase_result must be a PhaseSequence or None")
+        if hands is not None and not isinstance(hands, Hands):
+            raise TypeError("hands must be a Hands or None")
         if not bool(self.cfg.object_tracking.enabled):
             return None
 
@@ -240,6 +242,7 @@ class PreprocessPipeline:
             cfg=object_cfg,
             vio_result=vio_result,
             phase_result=phase_result,
+            hands=hands,
         )
         return generator.get_object_data()
 

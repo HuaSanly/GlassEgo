@@ -4,9 +4,13 @@ reuse_existing: false
 indices:
   object_centric_max_frames: 60
   object_centric_min_frames: 30
-  # Keep the temporal model input contiguous while bounding memory/runtime.
-  tracking_max_frames: 180
-  reference_index: -1
+  reference_index: 0
+
+pose_propagation:
+  min_hand_confidence: 0.5
+  grasp_distance_threshold_m: 0.20
+  disable_kinematic_latching_left: false
+  disable_kinematic_latching_right: false
 
 dinosam:
   dino_model_id: IDEA-Research/grounding-dino-base

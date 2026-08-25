@@ -128,6 +128,14 @@ schema 3，并在顶层声明相同的 `world_frame`、`world_origin` 和 `initi
 或 `vlm`。`vlm` 姿态只负责从首个参考图像裁剪估计物体旋转，物体平移仍来自
 Aria MPS 相机位姿下的多视图三角化。
 
+物体后处理遵循 HumanEgo 的静态锚点约定：按名称排序后的首个 `obj*`（通常为
+`obj1`）是不可被手部锁定的静态 anchor；其余对象在手部从松开切换为抓取且与对象
+中心距离小于 `0.20 m` 时，保存手到物体的刚性变换并随手部世界位姿传播。松手后
+对象保留最后位姿。全局序列写入 `preprocess/objects/poses/object_poses.json`，操作帧的
+HumanEgo 训练契约写入 `preprocess/all_data/<frame>/training_data.json`；两者都必须声明
+Aria MPS 世界系。`preprocess/objects/poses/object_centric.{ply,png}` 用静态 anchor
+坐标显示对象点云和手部轨迹，仅用于质量检查。
+
 ## 7. 最小有效性检查
 
 一个数据单元至少应通过以下检查：

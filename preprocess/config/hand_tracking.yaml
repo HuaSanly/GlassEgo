@@ -1,5 +1,5 @@
 # 是否运行整个手部预处理模块。
-enabled: false
+enabled: true
 
 detector:
   # auto 优先 ViTPose，初始化失败时回退 MediaPipe；另外两个值强制使用指定后端。
