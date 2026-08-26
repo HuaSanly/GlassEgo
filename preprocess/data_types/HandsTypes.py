@@ -177,8 +177,23 @@ class HandData:
     palm_pose: Optional[np.ndarray] = None
     hand_keypoints_3d: Optional[np.ndarray] = None
     hand_keypoints_2d: Optional[np.ndarray] = None
-    grasp_state: int = 0
+    # Continuous hand-only prior in [0, 1]; keep the historical field name.
+    grasp_state: float = 0.0
     joint_angles: Optional[HandsJointAngles] = None
+    grasp_tip_distance_m: Optional[float] = None
+    grasp_palm_size_m: Optional[float] = None
+    grasp_ratio: Optional[float] = None
+
+    @property
+    def grasp_score(self) -> float:
+        """Continuous hand-only grasp prior used by downstream consumers."""
+        value = float(self.grasp_state or 0.0)
+        return 0.0 if not np.isfinite(value) else float(np.clip(value, 0.0, 1.0))
+
+    @grasp_score.setter
+    def grasp_score(self, value: float) -> None:
+        value = float(value)
+        self.grasp_state = 0.0 if not np.isfinite(value) else float(np.clip(value, 0.0, 1.0))
 
     # 手腕运动学
     wrist_pose_raw_world: Optional[np.ndarray] = None
@@ -272,12 +287,16 @@ class Hands:
                     "d2c": self._safe_list(h.d2c),
                     "c2w": self._safe_list(h.c2w),
                     "confidence": h.confidence,
-                    "grasp_state": h.grasp_state,
+                    "grasp_state": h.grasp_score,
+                    "grasp_score": h.grasp_score,
                     "wrist_pose": self._safe_list(h.wrist_pose),
                     "palm_pose": self._safe_list(h.palm_pose),
                     "kpts_3d": self._safe_list(h.hand_keypoints_3d),
                     "kpts_2d": self._safe_list(h.hand_keypoints_2d),
                     "joint_angles": h.joint_angles.data if h.joint_angles else {},
+                    "grasp_tip_distance_m": h.grasp_tip_distance_m,
+                    "grasp_palm_size_m": h.grasp_palm_size_m,
+                    "grasp_ratio": h.grasp_ratio,
                     "wrist_pose_raw_world": self._safe_list(h.wrist_pose_raw_world),
                     "wrist_pose_opt_world": self._safe_list(h.wrist_pose_opt_world),
                     "wrist_lin_vel_raw_world": self._safe_list(h.wrist_lin_vel_raw_world),
@@ -338,12 +357,16 @@ class Hands:
                     "d2c": sl(h.d2c),
                     "c2w": sl(h.c2w),
                     "confidence": sl(h.confidence),
-                    "grasp_state": sl(h.grasp_state),
+                    "grasp_state": sl(h.grasp_score),
+                    "grasp_score": sl(h.grasp_score),
                     "wrist_pose": sl(h.wrist_pose),
                     "palm_pose": sl(h.palm_pose),
                     "kpts_3d": sl(h.hand_keypoints_3d),
                     "kpts_2d": sl(h.hand_keypoints_2d),
                     "joint_angles": {k: sl(v) for k, v in (h.joint_angles.data if h.joint_angles else {}).items()},
+                    "grasp_tip_distance_m": sl(h.grasp_tip_distance_m),
+                    "grasp_palm_size_m": sl(h.grasp_palm_size_m),
+                    "grasp_ratio": sl(h.grasp_ratio),
                     "wrist_pose_raw_world": sl(h.wrist_pose_raw_world),
                     "wrist_pose_opt_world": sl(h.wrist_pose_opt_world),
                     "wrist_lin_vel_raw_world": sl(h.wrist_lin_vel_raw_world),

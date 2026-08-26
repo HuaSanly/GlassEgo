@@ -42,7 +42,7 @@ class ObjectProcessUnit:
 class ObjectTrackingGenerator:
     """按 HumanEgo indices 顺序协调 DINO-SAM 到三角化。"""
 
-    CACHE_VERSION = 5
+    CACHE_VERSION = 6
 
     def __init__(
         self,
@@ -264,7 +264,7 @@ class ObjectTrackingGenerator:
                         if hand.confidence is None
                         else float(hand.confidence)
                     ),
-                    "grasp": int(hand.grasp_state or 0),
+                    "grasp": float(hand.grasp_score),
                     "pose": np.asarray(pose).tolist() if pose is not None else None,
                 }
             values.append({"idx": int(item.idx), "sides": sides})
@@ -310,7 +310,7 @@ class ObjectTrackingGenerator:
             with self.object_pose_path.open("r", encoding="utf-8") as stream:
                 object_poses = json.load(stream)
             if (
-                object_poses.get("schema_version") != 1
+                object_poses.get("schema_version") != 2
                 or object_poses.get("world_frame") != ARIA_MPS_WORLD_FRAME
                 or object_poses.get("world_origin") != ARIA_MPS_WORLD_ORIGIN
                 or object_poses.get("initial_heading") != ARIA_MPS_INITIAL_HEADING

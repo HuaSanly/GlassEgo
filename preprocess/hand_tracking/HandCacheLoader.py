@@ -139,16 +139,27 @@ def _parse_hand(document: dict | None, is_right: bool, path: Path) -> HandData |
         for field in _HAND_ARRAY_FIELDS
         if field in document
     }
+    for field, serialized_name in {
+        "hand_keypoints_3d": "kpts_3d",
+        "hand_keypoints_2d": "kpts_2d",
+    }.items():
+        if field not in values and serialized_name in document:
+            values[field] = _to_array(document[serialized_name])
     joint_angles = document.get("joint_angles")
     if isinstance(joint_angles, dict):
         values["joint_angles"] = HandsJointAngles(
             data={key: float(value) for key, value in joint_angles.items()}
         )
+    grasp_value = document.get("grasp_score", document.get("grasp_state", 0.0))
+    grasp_value = _optional_float(grasp_value) or 0.0
     return HandData(
         **values,
         is_right=is_right,
         confidence=None if confidence is None else float(confidence),
-        grasp_state=int(document.get("grasp_state", 0)),
+        grasp_state=float(np.clip(grasp_value, 0.0, 1.0)),
+        grasp_tip_distance_m=_optional_float(document.get("grasp_tip_distance_m")),
+        grasp_palm_size_m=_optional_float(document.get("grasp_palm_size_m")),
+        grasp_ratio=_optional_float(document.get("grasp_ratio")),
     )
 
 
@@ -156,3 +167,12 @@ def _to_array(value):
     if value is None:
         return None
     return np.asarray(value, dtype=np.float64)
+
+
+def _optional_float(value):
+    if value is None:
+        return None
+    result = float(value)
+    if not np.isfinite(result):
+        return None
+    return result

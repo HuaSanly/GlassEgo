@@ -290,8 +290,7 @@ class PhaseSegmentationGenerator:
                     )
                 if scores:
                     motion_scores.append(max(scores))
-                if int(hand.grasp_state) == 1:
-                    grasp_scores.append(confidence)
+                grasp_scores.append(confidence * hand.grasp_score)
             presence[index] = 1.0 - missing_probability
             motion[index] = max(motion_scores, default=0.0)
             grasp[index] = max(grasp_scores, default=0.0)

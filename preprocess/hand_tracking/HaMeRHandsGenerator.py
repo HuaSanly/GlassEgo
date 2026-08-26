@@ -753,14 +753,37 @@ class HaMeRHandsGenerator:
         mid_mcp = kpts_cam[9]
         distance = float(np.linalg.norm(thumb_tip - index_tip))
         palm_size = float(np.linalg.norm(mid_mcp - wrist))
-        if palm_size > 0.01:
-            grasp_ratio = distance / palm_size
-            grasp_state = (
-                1 if grasp_ratio < float(self.cfg.grasp.ratio_threshold) else 0
+        grasp_ratio = distance / palm_size if palm_size > 1e-12 else None
+        if palm_size > 0.01 and grasp_ratio is not None:
+            closed_ratio = float(
+                getattr(
+                    self.cfg.grasp,
+                    "ratio_closed_threshold",
+                    float(self.cfg.grasp.ratio_threshold) * 0.2,
+                )
+            )
+            open_ratio = float(
+                getattr(
+                    self.cfg.grasp,
+                    "ratio_open_threshold",
+                    float(self.cfg.grasp.ratio_threshold),
+                )
+            )
+            grasp_state = self._score_from_interval(
+                grasp_ratio, closed_ratio, open_ratio
             )
         else:
-            grasp_threshold = float(self.cfg.grasp.fallback_distance_m)
-            grasp_state = 1 if distance < grasp_threshold else 0
+            open_distance = float(self.cfg.grasp.fallback_distance_m)
+            closed_distance = float(
+                getattr(
+                    self.cfg.grasp,
+                    "fallback_closed_distance_m",
+                    open_distance * 0.45,
+                )
+            )
+            grasp_state = self._score_from_interval(
+                distance, closed_distance, open_distance
+            )
 
         # 关节角度
         joint_angles = HandsJointAngles.from_keypoints_3d(kpts_cam)
@@ -778,6 +801,9 @@ class HaMeRHandsGenerator:
             hand_keypoints_3d=kpts_cam,
             hand_keypoints_2d=kpts_2d,
             grasp_state=grasp_state,
+            grasp_tip_distance_m=distance,
+            grasp_palm_size_m=palm_size,
+            grasp_ratio=grasp_ratio,
             joint_angles=joint_angles,
         )
     def _compute_and_assign_vel(self, hands_data: HandsData,
@@ -912,8 +938,23 @@ class HaMeRHandsGenerator:
                         if h_start.hand_keypoints_2d is not None and h_end.hand_keypoints_2d is not None:
                             h_new.hand_keypoints_2d = (1.0 - t) * h_start.hand_keypoints_2d + t * h_end.hand_keypoints_2d
 
-                        # 抓取状态和首保持一致
-                        h_new.grasp_state = h_start.grasp_state
+                        if h_new.hand_keypoints_3d is not None and len(h_new.hand_keypoints_3d) >= 21:
+                            h_new.grasp_tip_distance_m = float(
+                                np.linalg.norm(h_new.hand_keypoints_3d[4] - h_new.hand_keypoints_3d[8])
+                            )
+                            h_new.grasp_palm_size_m = float(
+                                np.linalg.norm(h_new.hand_keypoints_3d[9] - h_new.hand_keypoints_3d[0])
+                            )
+                            if h_new.grasp_palm_size_m > 1e-12:
+                                h_new.grasp_ratio = (
+                                    h_new.grasp_tip_distance_m / h_new.grasp_palm_size_m
+                                )
+
+                        # 插值帧沿用连续抓取先验，避免漏检造成突变。
+                        h_new.grasp_score = (
+                            (1.0 - t) * h_start.grasp_score
+                            + t * h_end.grasp_score
+                        )
                         # 把新手部数据插入这个列表对象
                         setattr(hands.hands[fill_idx], attr, h_new)
     def _suppress_short_hands(self, hands: Hands, min_frames: int = 5) -> None:
@@ -942,22 +983,17 @@ class HaMeRHandsGenerator:
                 states.append(hand.grasp_state if hand else 0)
             g = np.array(states, dtype=np.float32)
             g = uniform_filter1d(g, size=size) #一维均匀滤波，对每个位置取相邻size个数的平均值
-            g = (g > 0.5).astype(int) #  (g > 0.5) 这一步把大于0.5的数转换为浮点数组，然后.astype转换为int类型
-
-            # 抓取状态闪烁抑制
-            flicker_max = self.cfg.grasp.flicker_max_len
-            for flip_val in [0, 1]:
-                count = 0
-                for i in range(len(g)):
-                    if g[i] == flip_val:
-                        count += 1
-                    else:
-                        if 0 < count <= flicker_max:
-                            for j in range(i - count, i):  #翻转短片段
-                                g[j] = 1 - flip_val
-                        count = 0
-            #处理后结果写入
+            # 保留连续置信度，锁定阶段由物体传播器的滞回逻辑处理。
             for i, h in enumerate(hands.hands):
                 hand = getattr(h, attr)
                 if hand:
-                    hand.grasp_state = int(g[i])
+                    hand.grasp_score = float(np.clip(g[i], 0.0, 1.0))
+
+    @staticmethod
+    def _score_from_interval(value: float, closed: float, opened: float) -> float:
+        """Map a distance-like value to grasp confidence: closed=1, open=0."""
+        if not np.isfinite(value):
+            return 0.0
+        if opened <= closed:
+            raise ValueError("Grasp score interval must satisfy opened > closed")
+        return float(np.clip((opened - value) / (opened - closed), 0.0, 1.0))

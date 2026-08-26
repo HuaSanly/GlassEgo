@@ -8,7 +8,15 @@ indices:
 
 pose_propagation:
   min_hand_confidence: 0.5
+  # Contact falloff distance after subtracting the estimated object radius.
   grasp_distance_threshold_m: 0.20
+  lock_grasp_weight: 0.60
+  lock_confidence_weight: 0.10
+  lock_proximity_weight: 0.30
+  lock_enter_score: 0.65
+  lock_exit_score: 0.45
+  lock_enter_frames: 2
+  lock_exit_frames: 3
   disable_kinematic_latching_left: false
   disable_kinematic_latching_right: false
 

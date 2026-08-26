@@ -39,6 +39,8 @@ HaMeR 手部追踪可视化和分析操作 (HandsOps.py)
 ====================================================================================================
 """
 
+import csv
+import json
 import os
 import cv2
 import numpy as np
@@ -184,8 +186,10 @@ class HandsOps:
             Dict: 包含以下 numpy 数组的字典（来自 locals()）：
                 - frames          (N,)    : 帧索引数组[0..N-1]。
                 - conf            (N,)    : 跟踪每帧的置信度 [0, 1]。
-                - grasp           (N,)    : 二进制抓取状态（0=打开，1=关闭）。
-                - dist_raw (N,)：原始拇指索引 3D 距离（以米为单位）。
+                - grasp           (N,)    : 连续抓取置信度 [0, 1]。
+                - tip_distance_raw (N,)：拇指尖到食指尖的原始 3D 距离（米）。
+                - palm_size_raw (N,)：手腕到中指 MCP 的原始尺度（米）。
+                - grasp_ratio_raw (N,)：tip_distance_raw / palm_size_raw。
                 - dist_opt (N,)：平滑的拇指索引距离（以米为单位）。
                 - mid_raw_xyz (N, 3) ：原始中点世界位置 (m)。
                 - mid_opt_xyz (N, 3) ：优化中点世界位置 (m)。
@@ -205,7 +209,10 @@ class HandsOps:
         conf, grasp = np.zeros(n), np.zeros(n)
 
         # 位置和位姿容器（NaN = 缺失帧）
-        dist_raw = np.full(n, np.nan)
+        tip_distance_raw = np.full(n, np.nan)
+        palm_size_raw = np.full(n, np.nan)
+        grasp_ratio_raw = np.full(n, np.nan)
+        dist_raw = tip_distance_raw
         mid_raw_xyz, mid_opt_xyz = np.full((n, 3), np.nan), np.full((n, 3), np.nan)
         wrist_raw_xyz, wrist_opt_xyz = np.full((n, 3), np.nan), np.full((n, 3), np.nan)
         wrist_pose_raw, wrist_pose_opt = [None] * n, [None] * n
@@ -225,16 +232,32 @@ class HandsOps:
             if h is None: continue
 
             conf[i] = float(h.confidence) if h.confidence is not None else 0.0
-            grasp[i] = int(h.grasp_state)
+            grasp[i] = h.grasp_score
 
             if (
                 h.hand_keypoints_3d is not None
                 and len(h.hand_keypoints_3d) > INDEX_TIP_INDEX
             ):
-                dist_raw[i] = np.linalg.norm(
-                    h.hand_keypoints_3d[THUMB_TIP_INDEX]
-                    - h.hand_keypoints_3d[INDEX_TIP_INDEX]
+                keypoints = np.asarray(h.hand_keypoints_3d, dtype=np.float64)
+                tip_distance_raw[i] = np.linalg.norm(
+                    keypoints[THUMB_TIP_INDEX] - keypoints[INDEX_TIP_INDEX]
                 )
+                palm_size_raw[i] = np.linalg.norm(keypoints[9] - keypoints[WRIST_INDEX])
+                if palm_size_raw[i] > 1e-12:
+                    grasp_ratio_raw[i] = tip_distance_raw[i] / palm_size_raw[i]
+
+            for name, values in (
+                ("tip_distance_raw", tip_distance_raw),
+                ("palm_size_raw", palm_size_raw),
+                ("grasp_ratio_raw", grasp_ratio_raw),
+            ):
+                value = getattr(h, {
+                    "tip_distance_raw": "grasp_tip_distance_m",
+                    "palm_size_raw": "grasp_palm_size_m",
+                    "grasp_ratio_raw": "grasp_ratio",
+                }[name], None)
+                if value is not None and np.isfinite(float(value)):
+                    values[i] = float(value)
 
             if h.midpoint_translation_raw_world is not None: mid_raw_xyz[i, :] = h.midpoint_translation_raw_world
             if h.midpoint_translation_opt_world is not None: mid_opt_xyz[i, :] = h.midpoint_translation_opt_world
@@ -287,6 +310,118 @@ class HandsOps:
         mid2d_opt = np.stack([HandsOps._interpolate_and_smooth(mid2d_raw[:, d]) for d in range(2)], axis=1)
 
         return locals()
+
+
+    @staticmethod
+    def _save_grasp_metrics_report(
+        data: Dict,
+        aria_hands: Hands,
+        save_dir: str,
+        side_name: str,
+        cfg: Any,
+        dt: float,
+    ) -> None:
+        """保存抓取几何的逐帧数值和专用曲线图。"""
+        frames = data["frames"]
+        timestamps = list(getattr(aria_hands, "tss", []))
+        if len(timestamps) != len(frames):
+            timestamps = [None] * len(frames)
+
+        def finite_or_none(value):
+            value = float(value)
+            return value if np.isfinite(value) else None
+
+        rows = []
+        for index, frame_idx in enumerate(frames):
+            rows.append({
+                "frame_idx": int(frame_idx),
+                "timestamp_ns": None if timestamps[index] is None else int(timestamps[index]),
+                "present": bool(data["conf"][index] > 0.0),
+                "confidence": finite_or_none(data["conf"][index]),
+                "tip_distance_m": finite_or_none(data["tip_distance_raw"][index]),
+                "palm_size_m": finite_or_none(data["palm_size_raw"][index]),
+                "tip_distance_over_palm_size": finite_or_none(data["grasp_ratio_raw"][index]),
+                "grasp_state": float(data["grasp"][index]),
+                "grasp_score": float(data["grasp"][index]),
+            })
+
+        report = {
+            "schema_version": 1,
+            "hand_side": "right" if side_name == "r" else "left",
+            "tip_distance_definition": "norm(kpts[4] - kpts[8])",
+            "palm_size_definition": "norm(kpts[9] - kpts[0])",
+            "grasp_ratio_definition": "tip_distance_m / palm_size_m",
+            "ratio_threshold": float(cfg.grasp.ratio_threshold),
+            "ratio_closed_threshold": float(
+                getattr(cfg.grasp, "ratio_closed_threshold", cfg.grasp.ratio_threshold * 0.2)
+            ),
+            "ratio_open_threshold": float(
+                getattr(cfg.grasp, "ratio_open_threshold", cfg.grasp.ratio_threshold)
+            ),
+            "fallback_distance_m": float(cfg.grasp.fallback_distance_m),
+            "fallback_closed_distance_m": float(
+                getattr(cfg.grasp, "fallback_closed_distance_m", cfg.grasp.fallback_distance_m * 0.45)
+            ),
+            "frame_period_s": float(dt),
+            "frames": rows,
+        }
+        json_path = os.path.join(save_dir, f"aria_hands_grasp_metrics_{side_name}.json")
+        with open(json_path, "w", encoding="utf-8") as stream:
+            json.dump(report, stream, indent=2, ensure_ascii=True)
+
+        csv_path = os.path.join(save_dir, f"aria_hands_grasp_metrics_{side_name}.csv")
+        fieldnames = tuple(rows[0].keys()) if rows else (
+            "frame_idx", "timestamp_ns", "present", "confidence",
+            "tip_distance_m", "palm_size_m", "tip_distance_over_palm_size",
+            "grasp_state", "grasp_score",
+        )
+        with open(csv_path, "w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+
+        figure, axes = plt.subplots(2, 1, figsize=(15, 8), sharex=True)
+        axes[0].plot(frames, data["tip_distance_raw"], label="tip distance", color="#D1495B")
+        axes[0].plot(frames, data["palm_size_raw"], label="palm size", color="#00798C")
+        axes[0].axhline(
+            float(cfg.grasp.fallback_distance_m),
+            linestyle="--", color="#555555", linewidth=1.0,
+            label="fallback distance",
+        )
+        axes[0].set_ylabel("distance (m)")
+        axes[0].set_title("Grasp geometry distances")
+        axes[0].legend(loc="upper right")
+        axes[0].grid(True, alpha=0.35)
+
+        axes[1].plot(
+            frames, data["grasp_ratio_raw"],
+            label="tip distance / palm size", color="#6A4C93",
+        )
+        axes[1].axhline(
+            float(cfg.grasp.ratio_threshold),
+            linestyle="--", color="#222222", linewidth=1.0,
+            label="ratio threshold",
+        )
+        state_axis = axes[1].twinx()
+        state_axis.step(
+            frames, data["grasp"], where="post",
+            label="grasp state", color="#F18F01", alpha=0.7,
+        )
+        state_axis.set_ylim(-0.05, 1.05)
+        state_axis.set_yticks([0, 1], labels=["OPEN", "CLOSED"])
+        axes[1].set_ylabel("ratio")
+        axes[1].set_xlabel("Frame")
+        axes[1].set_title("Normalized grasp geometry and final state")
+        axes[1].grid(True, alpha=0.35)
+        lines, labels = axes[1].get_legend_handles_labels()
+        state_lines, state_labels = state_axis.get_legend_handles_labels()
+        axes[1].legend(lines + state_lines, labels + state_labels, loc="upper right")
+        figure.tight_layout()
+        figure.savefig(
+            os.path.join(save_dir, f"aria_hands_grasp_metrics_{side_name}.png"),
+            dpi=ANALYSIS_FIG_DPI,
+        )
+        plt.close(figure)
 
 
     @staticmethod
@@ -494,6 +629,14 @@ class HandsOps:
 
             frames = data["frames"]
             title_side = "RIGHT HAND" if is_right else "LEFT HAND"
+            HandsOps._save_grasp_metrics_report(
+                data,
+                aria_hands,
+                save_dir,
+                side_name,
+                cfg,
+                dt,
+            )
 
             plt.style.use('seaborn-v0_8-whitegrid')
             fig = plt.figure(figsize=ANALYSIS_FIGSIZE)
@@ -539,6 +682,7 @@ class HandsOps:
             # 在辅助 y 轴上叠加拇指索引距离
             ax2 = ax.twinx()
             ax2.plot(frames, data["dist_raw"], color=C_RAW, alpha=ANALYSIS_ALPHA_RAW, linewidth=ANALYSIS_LINEWIDTH_AUX, label="Thumb-Index Dist (Raw)")
+            ax2.plot(frames, data["palm_size_raw"], color=C_AUX, alpha=0.9, linewidth=ANALYSIS_LINEWIDTH_MAIN, label="Palm Size (Raw)")
             ax2.plot(frames, data["dist_opt"], color=C_OPT, alpha=ANALYSIS_ALPHA_OPT, linewidth=ANALYSIS_LINEWIDTH_MAIN, label="Thumb-Index Dist (Opt)")
             ax2.axhline(cfg.grasp.fallback_distance_m, linestyle="--", linewidth=1.2, color="#444444", alpha=0.9, label="grasp threshold")
 
@@ -814,8 +958,8 @@ class HandsOps:
             ax.axis("off")
 
             def count_grasps_from_seq(seq: np.ndarray) -> int:
-                """计算二进制状态序列中的抓取开始事件（0→1 转换）。"""
-                return int(np.sum((seq[1:] == 1) & (seq[:-1] == 0)))
+                """计算连续抓取评分跨过 0.5 的开始事件。"""
+                return int(np.sum((seq[1:] >= 0.5) & (seq[:-1] < 0.5)))
 
             valid_frames = int(np.sum(data["conf"] > 0))
             grasps_cnt = count_grasps_from_seq(data["grasp"])
@@ -917,7 +1061,10 @@ class HandsOps:
         def count_grasps(hand_side: str) -> int:
             """计算一侧的抓握起始事件（0→1 转换）。"""
             states = [getattr(h, hand_side).grasp_state if getattr(h, hand_side) else 0 for h in aria_hands.hands]
-            return sum(1 for i in range(1, len(states)) if states[i] == 1 and states[i-1] == 0)
+            return sum(
+                1 for i in range(1, len(states))
+                if states[i] >= 0.5 and states[i - 1] < 0.5
+            )
 
         r_grasps = count_grasps('hand_r')
         l_grasps = count_grasps('hand_l')
@@ -959,7 +1106,7 @@ class HandsOps:
             img  (np.ndarray): 要绘制的 BGR 输入图像，形状（高、宽、3）。
             hand (Any)       : HandData 物体具有：
                                  hand_keypoints_2d（np.ndarray，形状21×2）：2D关键点（px）。
-                                 grasp_state（整数）：0=打开，1=closed/grasp.
+                                 grasp_state（浮点）：0=打开，1=closed/grasp.
 
         返回：
             np.ndarray：就地绘制骨架的图像。如果返回不变
@@ -975,7 +1122,7 @@ class HandsOps:
         if np.any(np.abs(pts_float) > safe_limit):
             return img
         pts = np.rint(pts_float).astype(np.int32)
-        is_grasp = (hand.grasp_state == 1)
+        is_grasp = hand.grasp_score >= 0.5
 
         # BGR 中的每个手指颜色映射：[拇指、食指、中指、无名指、小指]
         if not is_grasp:
@@ -1202,7 +1349,7 @@ class HandsOps:
 
         # --- 2. 状态逻辑 ---
         if hand is not None:
-            is_grasp = (hand.grasp_state == 1)
+            is_grasp = hand.grasp_score >= 0.5
             conf = hand.confidence
             state_str = "CLOSED" if is_grasp else "OPEN"
             col = (0, 0, 255) if is_grasp else (0, 191, 255)
@@ -1491,7 +1638,7 @@ class HandsOps:
             img  (np.ndarray): 要绘制的 BGR 图像，形状（高、宽、3）。
             hand (Any)       : HandData 具有优化的世界字段：
                                  wrist_pose_opt_world、thumb/index_translation_opt_world、
-                                 midpoint_translation_opt_world、grasp_state。
+                                 midpoint_translation_opt_world、连续 grasp_score。
             k    (np.ndarray): 相机固有矩阵，形状 (3, 3)。
             d    (np.ndarray): 失真系数。
             c2w  (np.ndarray): 相机到世界的 4×4 变换矩阵。
@@ -1592,7 +1739,7 @@ class HandsOps:
             return img
 
         # 5.UI颜色和样式设置
-        is_active = hand.grasp_state == 1
+        is_active = hand.grasp_score >= 0.5
         COLOR_GRASP = (0, 215, 255) if not is_active else (0, 69, 255) # 金色 vs 橙红色
         COLOR_WRIST = (255, 255, 0)   # Cyan
         COLOR_TEXT  = (255, 255, 255) # White

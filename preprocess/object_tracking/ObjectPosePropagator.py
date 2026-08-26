@@ -9,7 +9,7 @@ from preprocess.data_types.VIOTypes import (
 )
 
 
-OBJECT_POSE_SCHEMA_VERSION = 1
+OBJECT_POSE_SCHEMA_VERSION = 2
 
 
 class ObjectPosePropagator:
@@ -24,6 +24,51 @@ class ObjectPosePropagator:
             getattr(cfg, "grasp_distance_threshold_m", 0.20)
             if cfg is not None
             else 0.20
+        )
+        if self.grasp_distance_threshold_m <= 0.0:
+            raise ValueError("Object grasp distance threshold must be positive")
+        self.lock_grasp_weight = float(
+            getattr(cfg, "lock_grasp_weight", 0.60) if cfg is not None else 0.60
+        )
+        self.lock_confidence_weight = float(
+            getattr(cfg, "lock_confidence_weight", 0.10)
+            if cfg is not None
+            else 0.10
+        )
+        self.lock_proximity_weight = float(
+            getattr(cfg, "lock_proximity_weight", 0.30)
+            if cfg is not None
+            else 0.30
+        )
+        weight_sum = (
+            self.lock_grasp_weight
+            + self.lock_confidence_weight
+            + self.lock_proximity_weight
+        )
+        if min(
+            self.lock_grasp_weight,
+            self.lock_confidence_weight,
+            self.lock_proximity_weight,
+        ) < 0.0 or weight_sum <= 0.0:
+            raise ValueError("Object lock score weights must sum to a positive value")
+        self.lock_grasp_weight /= weight_sum
+        self.lock_confidence_weight /= weight_sum
+        self.lock_proximity_weight /= weight_sum
+        self.lock_enter_score = float(
+            getattr(cfg, "lock_enter_score", 0.65) if cfg is not None else 0.65
+        )
+        self.lock_exit_score = float(
+            getattr(cfg, "lock_exit_score", 0.45) if cfg is not None else 0.45
+        )
+        if self.lock_exit_score >= self.lock_enter_score:
+            raise ValueError("Object lock exit score must be lower than enter score")
+        self.lock_enter_frames = max(
+            1,
+            int(getattr(cfg, "lock_enter_frames", 1) if cfg is not None else 1),
+        )
+        self.lock_exit_frames = max(
+            1,
+            int(getattr(cfg, "lock_exit_frames", 2) if cfg is not None else 2),
         )
         self.disable_left_latching = bool(
             getattr(cfg, "disable_kinematic_latching_left", False)
@@ -67,6 +112,9 @@ class ObjectPosePropagator:
         }
         for key, pose in static_poses.items():
             self._validate_transform(pose, f"{key}.object_to_world_matrix")
+        object_geometry = self._object_geometry(
+            triangulation_document["objects"], static_poses
+        )
 
         dynamic_poses = {key: pose.copy() for key, pose in static_poses.items()}
         anchor_to_world = static_poses[anchor_key]
@@ -93,6 +141,7 @@ class ObjectPosePropagator:
                     current_hands[side],
                     dynamic_poses,
                     anchor_key,
+                    object_geometry,
                     moved_objects,
                 )
 
@@ -113,6 +162,11 @@ class ObjectPosePropagator:
                         else "static_initial"
                     ),
                     "latched_hand": state,
+                    "lock_score": (
+                        float(hand_states[state]["lock_score"])
+                        if state is not None
+                        else 0.0
+                    ),
                     "T_obj_to_anchor": (
                         world_to_anchor @ pose
                     ).tolist(),
@@ -130,6 +184,12 @@ class ObjectPosePropagator:
                             "present": current_hands[side]["pose"] is not None,
                             "confidence": current_hands[side]["confidence"],
                             "grasp": float(current_hands[side]["grasp"]),
+                            "grasp_score": float(current_hands[side]["grasp"]),
+                            "proximity_score": float(
+                                current_hands[side]["proximity_score"]
+                            ),
+                            "lock_score": float(current_hands[side]["lock_score"]),
+                            "candidate_object": current_hands[side]["candidate_object"],
                             "latched_object": hand_states[side]["object_key"],
                             "T_hand_to_world": (
                                 current_hands[side]["pose"].tolist()
@@ -177,9 +237,12 @@ class ObjectPosePropagator:
     def _new_hand_state() -> dict:
         return {
             "is_grasping": False,
-            "has_released": False,
             "object_key": None,
             "T_lock_h2obj": None,
+            "enter_count": 0,
+            "exit_count": 0,
+            "lock_score": 0.0,
+            "candidate_object": None,
         }
 
     def _update_hand_latch(
@@ -188,63 +251,157 @@ class ObjectPosePropagator:
         hand: dict,
         dynamic_poses: dict[str, np.ndarray],
         anchor_key: str,
+        object_geometry: dict[str, dict],
         moved_objects: set[str],
     ) -> None:
-        is_grasp = hand["grasp"] > 0.5
         hand_pose = hand["pose"]
-        if not is_grasp:
-            state["has_released"] = True
+        candidate_key, candidate_score, proximity_score = self._best_object(
+            hand,
+            dynamic_poses,
+            anchor_key,
+            object_geometry,
+        )
+        hand["candidate_object"] = candidate_key
+        hand["proximity_score"] = proximity_score
+        hand["lock_score"] = candidate_score
 
-        if (
-            is_grasp
-            and not state["is_grasping"]
-            and state["has_released"]
-            and hand_pose is not None
-        ):
-            state["is_grasping"] = True
-            object_key = self._nearest_dynamic_object(
-                hand_pose[:3, 3],
+        if state["is_grasping"]:
+            locked_key = state["object_key"]
+            hand["candidate_object"] = locked_key
+            locked_score, locked_proximity = self._object_lock_score(
+                hand,
+                locked_key,
                 dynamic_poses,
-                anchor_key,
+                object_geometry,
             )
-            if object_key is not None:
-                state["object_key"] = object_key
-                state["T_lock_h2obj"] = (
-                    np.linalg.inv(hand_pose) @ dynamic_poses[object_key]
-                )
+            state["lock_score"] = locked_score
+            hand["lock_score"] = locked_score
+            hand["proximity_score"] = locked_proximity
+            if locked_score < self.lock_exit_score:
+                state["exit_count"] += 1
             else:
-                state["object_key"] = None
-                state["T_lock_h2obj"] = None
-        elif not is_grasp and state["is_grasping"]:
-            state["is_grasping"] = False
-            state["object_key"] = None
-            state["T_lock_h2obj"] = None
+                state["exit_count"] = 0
+            if state["exit_count"] >= self.lock_exit_frames:
+                self._reset_hand_latch(state)
+            elif hand_pose is not None:
+                dynamic_poses[locked_key] = hand_pose @ state["T_lock_h2obj"]
+                moved_objects.add(locked_key)
+            return
 
-        if (
-            state["is_grasping"]
-            and state["object_key"] is not None
-            and state["T_lock_h2obj"] is not None
-            and hand_pose is not None
-        ):
-            dynamic_poses[state["object_key"]] = hand_pose @ state["T_lock_h2obj"]
-            moved_objects.add(state["object_key"])
+        state["exit_count"] = 0
+        if candidate_key is None or candidate_score < self.lock_enter_score:
+            state["enter_count"] = 0
+            return
+        if state.get("candidate_object") == candidate_key:
+            state["enter_count"] += 1
+        else:
+            state["candidate_object"] = candidate_key
+            state["enter_count"] = 1
+        if state["enter_count"] < self.lock_enter_frames or hand_pose is None:
+            return
 
-    def _nearest_dynamic_object(
+        state["is_grasping"] = True
+        state["object_key"] = candidate_key
+        state["lock_score"] = candidate_score
+        state["T_lock_h2obj"] = (
+            np.linalg.inv(hand_pose) @ dynamic_poses[candidate_key]
+        )
+        dynamic_poses[candidate_key] = hand_pose @ state["T_lock_h2obj"]
+        moved_objects.add(candidate_key)
+
+    @staticmethod
+    def _reset_hand_latch(state: dict) -> None:
+        state.update(
+            {
+                "is_grasping": False,
+                "object_key": None,
+                "T_lock_h2obj": None,
+                "enter_count": 0,
+                "exit_count": 0,
+                "lock_score": 0.0,
+                "candidate_object": None,
+            }
+        )
+
+    def _best_object(
         self,
-        hand_position: np.ndarray,
+        hand: dict,
         dynamic_poses: dict[str, np.ndarray],
         anchor_key: str,
-    ) -> str | None:
-        best_key = None
-        best_distance = float("inf")
-        for key, pose in dynamic_poses.items():
+        object_geometry: dict[str, dict],
+    ) -> tuple[str | None, float, float]:
+        if hand["pose"] is None:
+            return None, 0.0, 0.0
+        candidates = []
+        for key in dynamic_poses:
             if key == anchor_key:
                 continue
-            distance = float(np.linalg.norm(hand_position - pose[:3, 3]))
-            if distance < best_distance:
-                best_key = key
-                best_distance = distance
-        return best_key if best_distance < self.grasp_distance_threshold_m else None
+            score, proximity = self._object_lock_score(
+                hand, key, dynamic_poses, object_geometry
+            )
+            candidates.append((score, key, proximity))
+        if not candidates:
+            return None, 0.0, 0.0
+        score, key, proximity = max(candidates, key=lambda item: item[0])
+        return key, float(score), float(proximity)
+
+    def _object_lock_score(
+        self,
+        hand: dict,
+        object_key: str | None,
+        dynamic_poses: dict[str, np.ndarray],
+        object_geometry: dict[str, dict],
+    ) -> tuple[float, float]:
+        if object_key is None or hand["pose"] is None:
+            return 0.0, 0.0
+        geometry = object_geometry[object_key]
+        center_local = np.r_[geometry["center_local"], 1.0]
+        center_world = (dynamic_poses[object_key] @ center_local)[:3]
+        distance = float(np.linalg.norm(hand["pose"][:3, 3] - center_world))
+        surface_gap = max(0.0, distance - geometry["radius"])
+        proximity = float(
+            np.clip(
+                1.0 - surface_gap / self.grasp_distance_threshold_m,
+                0.0,
+                1.0,
+            )
+        )
+        confidence = float(np.clip(hand["confidence"] or 0.0, 0.0, 1.0))
+        score = (
+            self.lock_grasp_weight * hand["grasp"]
+            + self.lock_confidence_weight * confidence
+            + self.lock_proximity_weight * proximity
+        )
+        return float(np.clip(score, 0.0, 1.0)), proximity
+
+    @staticmethod
+    def _object_geometry(
+        objects: dict, static_poses: dict[str, np.ndarray]
+    ) -> dict[str, dict]:
+        geometry = {}
+        for key, value in objects.items():
+            points = np.asarray(value.get("points_3d_world", []), dtype=np.float64)
+            if points.ndim != 2 or points.shape[1] != 3 or not np.isfinite(points).all():
+                points = np.empty((0, 3), dtype=np.float64)
+            center_world = value.get("center_world")
+            if center_world is None and len(points):
+                center_world = points.mean(axis=0)
+            if center_world is None:
+                center_world = static_poses[key][:3, 3]
+            center_world = np.asarray(center_world, dtype=np.float64).reshape(3)
+            center_local = (
+                np.linalg.inv(static_poses[key]) @ np.r_[center_world, 1.0]
+            )[:3]
+            if len(points):
+                points_local = (
+                    np.linalg.inv(static_poses[key])
+                    @ np.c_[points, np.ones(len(points))].T
+                ).T[:, :3]
+                radius = float(np.max(np.linalg.norm(points_local - center_local, axis=1)))
+            else:
+                radius = 0.0
+            geometry[key] = {"center_local": center_local, "radius": radius}
+        return geometry
 
     @staticmethod
     def _object_state(hand_states: dict, object_key: str) -> str | None:
@@ -266,14 +423,24 @@ class ObjectPosePropagator:
 
     def _hand_state(self, hand) -> dict:
         if hand is None:
-            return {"pose": None, "confidence": None, "grasp": 0}
+            return {
+                "pose": None,
+                "confidence": None,
+                "grasp": 0.0,
+                "proximity_score": 0.0,
+                "lock_score": 0.0,
+                "candidate_object": None,
+            }
         confidence = hand.confidence
-        grasp = int(hand.grasp_state or 0)
+        grasp = float(hand.grasp_score)
         if confidence is None or float(confidence) < self.min_hand_confidence:
             return {
                 "pose": None,
                 "confidence": None if confidence is None else float(confidence),
                 "grasp": grasp,
+                "proximity_score": 0.0,
+                "lock_score": 0.0,
+                "candidate_object": None,
             }
         pose = hand.midpoint_pose_opt_world
         if pose is None:
@@ -288,6 +455,9 @@ class ObjectPosePropagator:
                 "pose": None,
                 "confidence": float(confidence),
                 "grasp": grasp,
+                "proximity_score": 0.0,
+                "lock_score": 0.0,
+                "candidate_object": None,
             }
         pose = np.asarray(pose, dtype=np.float64)
         ObjectPosePropagator._validate_transform(pose, "hand midpoint pose")
@@ -295,6 +465,9 @@ class ObjectPosePropagator:
             "pose": pose,
             "confidence": float(confidence),
             "grasp": grasp,
+            "proximity_score": 0.0,
+            "lock_score": 0.0,
+            "candidate_object": None,
         }
 
     @staticmethod

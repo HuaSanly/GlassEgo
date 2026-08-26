@@ -70,14 +70,15 @@ scoring:
     rotation_weight: 0.15
 
 grasp:
-  # 拇食指尖距离 / 手腕到中指 MCP 距离，小于该值判定为抓取。
+  # 拇食指尖距离 / 手腕到中指 MCP 距离的连续抓取评分区间。
   ratio_threshold: 1.0
+  ratio_closed_threshold: 0.20
+  ratio_open_threshold: 1.0
   # 无法计算尺度比例时使用的绝对指尖距离阈值，单位米。
   fallback_distance_m: 0.105
+  fallback_closed_distance_m: 0.047
   # 抓取状态的一维均值平滑窗口，单位帧。
   smooth_window: 5
-  # 不超过该长度的短抓取/非抓取片段会被翻转，单位帧。
-  flicker_max_len: 5
 
 postprocess:
   # 最终 hand confidence 低于该值时删除结果。
