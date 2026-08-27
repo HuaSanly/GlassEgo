@@ -21,13 +21,20 @@ class ObjectPoseQAExporter:
         "right": (0.10, 0.70, 0.90),
     }
 
-    def __init__(self, output_dir: str | Path):
+    def __init__(
+        self,
+        output_dir: str | Path,
+        png_path: str | Path | None = None,
+        ply_path: str | Path | None = None,
+    ):
         self.output_dir = Path(output_dir)
-        self.ply_path = self.output_dir / "object_centric.ply"
-        self.png_path = self.output_dir / "object_centric.png"
+        self.ply_path = Path(ply_path) if ply_path else self.output_dir / "object_centric.ply"
+        self.png_path = Path(png_path) if png_path else self.output_dir / "object_centric.png"
 
     def export(self, triangulation_document: dict, pose_document: dict) -> dict:
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.ply_path.parent.mkdir(parents=True, exist_ok=True)
+        self.png_path.parent.mkdir(parents=True, exist_ok=True)
         world_to_anchor = np.asarray(
             pose_document["world_to_anchor"],
             dtype=np.float64,

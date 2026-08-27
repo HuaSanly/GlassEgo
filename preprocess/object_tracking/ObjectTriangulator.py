@@ -293,10 +293,18 @@ class ObjectTriangulatorEngine:
 class ObjectTriangulator:
     """Generator 调用的物体 3D 三角化与位姿模块。"""
 
-    def __init__(self, unit_dir: str | Path, cfg=None, vlm_model=None):
+    def __init__(
+        self,
+        unit_dir: str | Path,
+        cfg=None,
+        vlm_model=None,
+        output_dir: str | Path | None = None,
+    ):
         self.unit_dir = Path(unit_dir).expanduser().resolve()
         self.cfg = cfg if cfg is not None else ObjectTriangulatorConfig()
-        self.output_dir = self.unit_dir / "preprocess" / "objects" / "triangulation"
+        self.output_dir = Path(output_dir).expanduser().resolve() if output_dir else (
+            self.unit_dir / "preprocess" / "objects" / "triangulation"
+        )
         self.result_path = self.output_dir / "object_3d_results.json"
         self.qa_path = self.output_dir / "object_3d_vis.png"
         self.ply_path = self.output_dir / "object_3d_vis.ply"

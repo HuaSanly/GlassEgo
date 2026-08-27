@@ -120,21 +120,37 @@ p_world = c2w @ p_camera
 world_frame = aria_mps_x_right_y_up_z_backward
 ```
 
-Basalt 原生世界系只允许作为临时计算结果。`preprocess/vio/basalt_trajectory.csv` 中的 IMU 位姿、`poses.json` 中的相机位姿以及所有下游 `*_world` 字段必须使用同一个 Aria MPS 世界系并带有坐标元数据。旧 schema 或旧世界系结果不得与新结果混用，应通过重新预处理生成。
+Basalt 原生世界系只允许作为临时计算结果。`preprocess/temp_data/basalt_trajectory.csv` 中的 IMU 位姿、`poses.json` 中的相机位姿以及所有下游 `*_world` 字段必须使用同一个 Aria MPS 世界系并带有坐标元数据。旧 schema 或旧世界系结果不得与新结果混用，应通过重新预处理生成。
 
-物体三角化结果 `preprocess/objects/triangulation/object_3d_results.json` 使用
-schema 3，并在顶层声明相同的 `world_frame`、`world_origin` 和 `initial_heading`。
+物体三角化结果 `preprocess/temp_data/object_3d_results.json` 使用 schema 3，并在顶层声明相同的
+`world_frame`、`world_origin` 和 `initial_heading`。
 `pose_method` 可以是全局字符串，也可以是按物体覆盖的映射；允许值为 `pca1`、`pca2`
 或 `vlm`。`vlm` 姿态只负责从首个参考图像裁剪估计物体旋转，物体平移仍来自
 Aria MPS 相机位姿下的多视图三角化。
 
-物体后处理遵循 HumanEgo 的静态锚点约定：按名称排序后的首个 `obj*`（通常为
-`obj1`）是不可被手部锁定的静态 anchor；其余对象在手部从松开切换为抓取且与对象
-中心距离小于 `0.20 m` 时，保存手到物体的刚性变换并随手部世界位姿传播。松手后
-对象保留最后位姿。全局序列写入 `preprocess/objects/poses/object_poses.json`，操作帧的
-HumanEgo 训练契约写入 `preprocess/all_data/<frame>/training_data.json`；两者都必须声明
-Aria MPS 世界系。`preprocess/objects/poses/object_centric.{ply,png}` 用静态 anchor
-坐标显示对象点云和手部轨迹，仅用于质量检查。
+物体后处理遵循 HumanEgo 的静态锚点约定：按名称排序后的首个 `obj*`（通常为 `obj1`）是
+不可被手部锁定的静态 anchor；其余对象在手部从松开切换为抓取且与对象中心距离小于
+`0.20 m` 时，保存手到物体的刚性变换并随手部世界位姿传播。松手后对象保留最后位姿。
+全局中间结果写入 `preprocess/temp_data/`，质量检查图写入 `preprocess/vis/objects/`。
+
+LaMa 和 VisualKpts 完成后，DatasetGen 只为训练帧写入：
+
+```text
+preprocess/
+├── all_data/<frame>/
+│   ├── rgb.png
+│   ├── rgb_WoArm.png
+│   ├── rgb_WArmObjKpts.png
+│   ├── rgb_WoArm_WArmObjKpts.png
+│   ├── mask_arm.png
+│   ├── mask_arm_and_obj.png
+│   └── training_data.json
+├── temp_data/<frame>/       # object-centric 上下文帧
+└── vis/                     # 按模块存放 PNG/JSON/LOG，MP4 直接位于此目录
+```
+
+`training_data.json` 的 `metadata.is_finished` 保持二分类阶段不变，仅在最后一个操作帧
+之后的固定尾帧（默认 5 帧）写为 `1.0`，其他训练帧写为 `0.0`。
 
 ## 7. 最小有效性检查
 

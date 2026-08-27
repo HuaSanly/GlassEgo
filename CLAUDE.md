@@ -85,9 +85,9 @@ python datacollection/rokidglass3/calibration/calibration_pipeline.py validate
 **主预处理流程：**
 ```bash
 # Run full preprocessing pipeline (VIO → hands → phases → objects)
-python preprocess/test_pipeline.py
+python preprocess/pipeline.py
 ```
-*注意：尽管名称包含 `test`，这是生产环境的入口点，不是测试套件*
+这是生产环境的预处理入口点，不是测试套件。
 
 自动发现 `data/` 下的数据单元并顺序处理。每个单元必须包含恰好一个视频文件，VIO 阶段还需要 `camera.csv`、`imu.csv` 和 `calibration.yaml`。
 
@@ -103,7 +103,7 @@ python preprocess/basalt_pipeline.py \
 用于 VIO 轨迹评估，输出 ATE RMSE、RPE 指标。
 
 **两者的区别：**
-- `test_pipeline.py`：完整流水线协调器，处理所有发现的单元
+- `pipeline.py`：完整流水线协调器，处理所有发现的单元
 - `basalt_pipeline.py`：VIO 验证工具，支持与 ground truth 对比
 
 ### Testing
@@ -161,7 +161,7 @@ datacollection/ → data/<unit>/ → preprocess/ → data/<unit>/preprocess/ →
 - Device-specific data collection code (real-time collection not yet integrated)
 
 **`preprocess/`**
-- `test_pipeline.py`: Main preprocessing CLI and coordinator (orchestrates all stages)
+- `pipeline.py`: Main preprocessing CLI and coordinator (orchestrates all stages)
 - `basalt_pipeline.py`: Standalone VIO validation tool with trajectory evaluation
 - `config/`: YAML configurations (default, sensors, hand_tracking, vio, phase_segmentation, object_tracking)
 - `data_types/`: Shared data structures (Cam, CamData, Hands, VIOResult, PhaseSequence, ObjectTrackingResult)
@@ -180,7 +180,7 @@ datacollection/ → data/<unit>/ → preprocess/ → data/<unit>/preprocess/ →
 
 ### Key Data Structures
 
-**ProcessUnit** (`preprocess/test_pipeline.py`):
+**ProcessUnit** (`preprocess/pipeline.py`):
 - `unit_dir`: Path to data unit
 - `video_path`: Path to video file
 - `pose_path`: Optional path to pose file (poses.json, pose.json, camera_poses.json)
@@ -354,7 +354,7 @@ wc -l camera.csv  # 应该是 nb_read_frames + 1（含表头）
 
 ## Notes
 
-- Despite its name, `test_pipeline.py` is the production preprocessing entry point, not a test suite
+- `pipeline.py` is the production preprocessing entry point, not a test suite
 - The `training/` directory structure exists but implementation is incomplete
 - Real-time data collection is not yet integrated; current workflow assumes offline processing
 - Model weights are auto-downloaded on first run unless `PREDOWNLOAD=1` is set during setup

@@ -5,6 +5,7 @@ from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
 
 import numpy as np
+import cv2
 from omegaconf import DictConfig, OmegaConf
 
 PREPROCESS_ROOT = Path(__file__).resolve().parent
@@ -19,7 +20,9 @@ if str(PREPROCESS_ROOT) not in sys.path:
     sys.path.insert(0, str(PREPROCESS_ROOT))
 
 from utils.utils_media import build_cam_from_disk
+from preprocess.DatasetGenerator import DatasetGenerator
 from utils.utils_math import time_it
+from utils.utils_artifact_store import FrameArtifactStore
 from data_types.HandsTypes import Hands
 from preprocess.data_types.ObjectTypes import ObjectTrackingResult
 from preprocess.data_types.PhaseTypes import OPERATION_MODE, PhaseSequence
@@ -58,7 +61,39 @@ class PreprocessPipeline:
                 vio_result = self.process_vio(unit)
                 hands = self.process_hands(unit, vio_result)
                 phase_result = self.process_phases(unit, vio_result, hands)
-                self.process_objects(unit, vio_result, phase_result, hands)
+                object_result = self.process_objects(unit, vio_result, phase_result, hands)
+                if object_result is not None:
+                    training_frames = set(object_result.report["training_frames"])
+                    context_frames = set(object_result.report["object_centric_frames"])
+                    frame_indices = list(object_result.report["tracking_frames"])
+                    frame_images = self._load_frame_images(
+                        unit,
+                        frame_indices,
+                        training_frames,
+                    )
+                    self.process_lama(
+                        unit,
+                        frame_images,
+                        training_frames,
+                        context_frames,
+                        float(object_result.report["fps"]),
+                    )
+                    self.process_visualkpts(
+                        unit,
+                        object_result,
+                        frame_images,
+                        frame_indices,
+                        training_frames,
+                        vio_result,
+                        hands,
+                    )
+                    self.process_dataset(
+                        unit,
+                        object_result,
+                        frame_images,
+                        training_frames,
+                        vio_result,
+                    )
             finally:
                 hands = None
                 phase_result = None
@@ -206,7 +241,7 @@ class PreprocessPipeline:
         if not bool(self.cfg.object_tracking.enabled):
             return None
 
-        output_dir = unit.unit_dir / "preprocess" / "objects"
+        output_dir = unit.unit_dir / "preprocess" / "vis" / "objects"
         output_dir.mkdir(parents=True, exist_ok=True)
         prompt_path = unit.unit_dir / "object_prompts.yaml"
         if not prompt_path.is_file():
@@ -233,7 +268,11 @@ class PreprocessPipeline:
         if not prompts:
             self._write_object_skip_report(unit, "object prompts are empty", prompt_path)
             return None
-        object_cfg = OmegaConf.merge(self.cfg.object_tracking, {"prompts": prompts})
+        object_cfg = OmegaConf.merge(
+            self.cfg.object_tracking,
+            {"prompts": prompts},
+            {"dataset_generation": self.cfg.dataset_generation},
+        )
 
         from object_tracking.ObjectTrackingGenerator import ObjectTrackingGenerator
 
@@ -246,13 +285,107 @@ class PreprocessPipeline:
         )
         return generator.get_object_data()
 
+    @time_it
+    def process_lama(
+        self,
+        unit: ProcessUnit,
+        frame_images: dict[int, np.ndarray],
+        training_frames: set[int],
+        context_frames: set[int],
+        fps: float = 30.0,
+    ) -> dict:
+        from preprocess.object_tracking.LaMa import LaMaGenerator
+
+        return LaMaGenerator(
+            unit.unit_dir,
+            self.cfg.object_tracking.lama,
+            store=FrameArtifactStore(unit.unit_dir),
+        ).run(frame_images, training_frames, context_frames, fps=fps)
+
+    @time_it
+    def process_visualkpts(
+        self,
+        unit: ProcessUnit,
+        object_result: ObjectTrackingResult,
+        frame_images: dict[int, np.ndarray],
+        frame_indices: list[int],
+        training_frames: set[int],
+        vio_result: VIOResult,
+        hands: Hands | None,
+    ) -> dict:
+        from preprocess.object_tracking.VisualKpts import VisualKptsGenerator
+
+        tracks_path = unit.unit_dir / object_result.report["outputs"]["tracks"]
+        with tracks_path.open("r", encoding="utf-8") as stream:
+            tracks_document = json.load(stream)
+        return VisualKptsGenerator(
+            unit.unit_dir,
+            self.cfg.object_tracking.visualkpts,
+            store=FrameArtifactStore(unit.unit_dir),
+        ).run(
+            frame_images,
+            frame_indices,
+            training_frames,
+            vio_result,
+            hands,
+            tracks_document,
+            float(object_result.report["fps"]),
+        )
+
+    @time_it
+    def process_dataset(
+        self,
+        unit: ProcessUnit,
+        object_result: ObjectTrackingResult,
+        frame_images: dict[int, np.ndarray],
+        training_frames: set[int],
+        vio_result: VIOResult,
+    ) -> dict:
+        outputs = object_result.report["outputs"]
+        with (unit.unit_dir / outputs["object_poses"]).open("r", encoding="utf-8") as stream:
+            pose_document = json.load(stream)
+        with (unit.unit_dir / outputs["triangulation"]).open("r", encoding="utf-8") as stream:
+            triangulation_document = json.load(stream)
+        finished_frames = set(object_result.report.get("finished_frames", []))
+        return DatasetGenerator(
+            unit.unit_dir,
+            cfg=self.cfg.dataset_generation,
+            store=FrameArtifactStore(unit.unit_dir),
+        ).run(
+            pose_document,
+            triangulation_document,
+            object_result.frames,
+            frame_images,
+            vio_result,
+            float(object_result.report["fps"]),
+            training_frames,
+            finished_frames,
+            unit.video_path,
+        )
+
+    @staticmethod
+    def _load_frame_images(
+        unit: ProcessUnit,
+        frame_indices: list[int],
+        training_frames: set[int],
+    ) -> dict[int, np.ndarray]:
+        store = FrameArtifactStore(unit.unit_dir)
+        images = {}
+        for frame_idx in frame_indices:
+            path = store.frame_dir(frame_idx, int(frame_idx) in training_frames) / "rgb.png"
+            image = cv2.imread(str(path))
+            if image is None:
+                raise FileNotFoundError(f"Missing object-stage RGB frame: {path}")
+            images[int(frame_idx)] = image
+        return images
+
     @staticmethod
     def _write_object_skip_report(
         unit: ProcessUnit,
         reason: str,
         prompt_path: Path | None,
     ) -> None:
-        output_dir = unit.unit_dir / "preprocess" / "objects"
+        output_dir = unit.unit_dir / "preprocess" / "vis" / "objects"
         output_dir.mkdir(parents=True, exist_ok=True)
         report = {
             "status": "skipped",
@@ -348,6 +481,7 @@ class PreprocessPipeline:
             "vio": config_root / "vio.yaml",
             "phase_segmentation": config_root / "phase_segmentation.yaml",
             "object_tracking": config_root / "object_tracking.yaml",
+            "dataset_generation": config_root / "dataset_generation.yaml",
         }
         missing = [str(path) for path in config_paths.values() if not path.is_file()]
         if missing:
@@ -366,6 +500,7 @@ class PreprocessPipeline:
             {"vio": load_yaml(config_paths["vio"])},
             {"phase_segmentation": load_yaml(config_paths["phase_segmentation"])},
             {"object_tracking": load_yaml(config_paths["object_tracking"])},
+            {"dataset_generation": load_yaml(config_paths["dataset_generation"])},
         )
         OmegaConf.resolve(cfg)
         return cfg

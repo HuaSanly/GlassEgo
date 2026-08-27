@@ -35,11 +35,11 @@ class BasaltVIOGenerator:
             min_pose_coverage=cfg.min_pose_coverage,
             max_interpolation_gap_ms=cfg.max_interpolation_gap_ms,
         )
-        self.output_dir = self.unit_dir / "preprocess" / "vio"
+        self.output_dir = self.unit_dir / "preprocess" / "temp_data"
         self.trajectory_path = self.output_dir / "basalt_trajectory.csv"
         self.pose_path = self.output_dir / "poses.json"
-        self.report_path = self.output_dir / "report.json"
-        self.log_path = self.output_dir / "basalt.log"
+        self.report_path = self.unit_dir / "preprocess" / "vis" / "vio" / "report.json"
+        self.log_path = self.unit_dir / "preprocess" / "vis" / "vio" / "basalt.log"
 
     def get_camera_poses(self, force: bool = False) -> VIOResult:
         """运行或复用 VIO，并返回逐帧相机位姿。"""

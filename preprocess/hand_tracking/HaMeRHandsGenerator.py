@@ -588,10 +588,11 @@ class HaMeRHandsGenerator:
         self._smooth_grasp_detection(hands, size=self.cfg.grasp.smooth_window)
 
         # 第四阶段：报告
-        os.makedirs(self.preprocess_dir, exist_ok=True)
+        analysis_dir = self.preprocess_dir / "vis" / "hands"
+        os.makedirs(analysis_dir, exist_ok=True)
         try:
             HandsOps.save_hands_analysis_plots_two(
-                hands, str(self.preprocess_dir), dt, self.cfg
+                hands, str(analysis_dir), dt, self.cfg
             )
         except Exception as e:
             print(f"[HaMeR] Warning: analysis plots failed: {e}")
@@ -625,7 +626,7 @@ class HaMeRHandsGenerator:
             if cam_d.img is not None:
                 img = cv2.cvtColor(cam_d.img, cv2.COLOR_RGB2BGR)
             else:
-                img_path = self.preprocess_dir / "all_data" / f"{cam_d.idx:05d}" / "rgb.png"
+                img_path = self.preprocess_dir / "temp_data" / f"{cam_d.idx:05d}" / "rgb.png"
                 img = cv2.imread(str(img_path)) if img_path.is_file() else None
             if img is None:
                 raise RuntimeError(f"Missing visualization frame: {cam_d.idx}")

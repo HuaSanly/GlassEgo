@@ -27,6 +27,7 @@ from preprocess.object_tracking.ObjectTriangulator import ObjectTriangulator
 from preprocess.object_tracking.ObjectPosePropagator import ObjectPosePropagator
 from preprocess.object_tracking.ObjectPoseQA import ObjectPoseQAExporter
 from utils.utils_math import time_it
+from utils.utils_artifact_store import FrameArtifactStore
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v"}
 
@@ -42,7 +43,7 @@ class ObjectProcessUnit:
 class ObjectTrackingGenerator:
     """按 HumanEgo indices 顺序协调 DINO-SAM 到三角化。"""
 
-    CACHE_VERSION = 6
+    CACHE_VERSION = 7
 
     def __init__(
         self,
@@ -61,30 +62,32 @@ class ObjectTrackingGenerator:
         self.vio_result = vio_result
         self.phase_result = phase_result
         self.hands = hands
+        self.store = FrameArtifactStore(self.unit_dir)
         self.prompts = dict(OmegaConf.select(cfg, "prompts", default={}) or {})
         if not self.prompts:
             raise ValueError("Object prompts are required")
-        self.output_dir = self.unit_dir / "preprocess" / "objects"
-        self.all_data_dir = self.output_dir / "all_data"
-        self.training_data_dir = self.unit_dir / "preprocess" / "all_data"
-        self.vis_dir = self.output_dir / "vis"
-        self.dinosam_video_path = self.vis_dir / "dinosam_vis.mp4"
-        self.cotracker_video_path = self.vis_dir / "cotracker_vis.mp4"
-        self.result_path = self.output_dir / "dinosam_results.json"
-        self.report_path = self.output_dir / "report.json"
-        self.keypoints_dir = self.output_dir / "keypoints"
-        self.keypoints_path = self.keypoints_dir / "kptsselector_results.json"
-        self.tracks_dir = self.output_dir / "tracks"
-        self.tracks_vis_dir = self.tracks_dir / "vis"
-        self.tracks_path = self.tracks_dir / "cotracker_results.json"
-        self.triangulation_dir = self.output_dir / "triangulation"
-        self.triangulation_path = self.triangulation_dir / "object_3d_results.json"
-        self.triangulation_qa_path = self.triangulation_dir / "object_3d_vis.png"
-        self.triangulation_ply_path = self.triangulation_dir / "object_3d_vis.ply"
-        self.pose_dir = self.output_dir / "poses"
-        self.object_pose_path = self.pose_dir / "object_poses.json"
-        self.object_centric_ply_path = self.pose_dir / "object_centric.ply"
-        self.object_centric_png_path = self.pose_dir / "object_centric.png"
+        self.output_dir = self.store.temp_data_dir
+        self.all_data_dir = self.store.temp_data_dir
+        self.training_data_dir = self.store.all_data_dir
+        self.vis_dir = self.store.vis_dir
+        self.object_vis_dir = self.store.module_vis_dir("objects")
+        self.dinosam_video_path = self.store.vis_dir / "dinosam_vis.mp4"
+        self.cotracker_video_path = self.store.vis_dir / "cotracker_vis.mp4"
+        self.result_path = self.store.temp_path("dinosam_results.json")
+        self.report_path = self.store.module_vis_dir("objects") / "report.json"
+        self.keypoints_dir = self.store.temp_data_dir
+        self.keypoints_path = self.store.temp_path("kptsselector_results.json")
+        self.tracks_dir = self.store.temp_data_dir
+        self.tracks_vis_dir = self.object_vis_dir
+        self.tracks_path = self.store.temp_path("cotracker_results.json")
+        self.triangulation_dir = self.store.temp_data_dir
+        self.triangulation_path = self.store.temp_path("object_3d_results.json")
+        self.triangulation_qa_path = self.object_vis_dir / "camtriangulator_vis.png"
+        self.triangulation_ply_path = self.store.temp_path("camtriangulator_vis.ply")
+        self.pose_dir = self.store.temp_data_dir
+        self.object_pose_path = self.store.temp_path("object_poses.json")
+        self.object_centric_ply_path = self.store.temp_path("object_centric.ply")
+        self.object_centric_png_path = self.object_vis_dir / "object_centric.png"
         self.dinosam = dinosam
         self.cotracker = cotracker
         self.triangulator = triangulator
@@ -105,9 +108,11 @@ class ObjectTrackingGenerator:
             raise ValueError("Object tracking requires Aria MPS VIO poses")
         object_centric = self._build_object_centric_indices()
         raw_manipulation = self._raw_manipulation_frames()
+        training_frames, finished_frames = self._training_frame_sets(raw_manipulation)
+        self.training_frames = training_frames
         tracking_sequence = self._merge_tracking_frames(
             object_centric,
-            raw_manipulation,
+            sorted(training_frames),
         )
         reference_position = int(self.cfg.indices.reference_index)
         if reference_position < 0:
@@ -119,7 +124,7 @@ class ObjectTrackingGenerator:
             raise ValueError("Object-centric sequence must contain at least two frames")
         fingerprint = self._build_fingerprint(
             object_centric,
-            raw_manipulation,
+            sorted(training_frames),
         )
         if bool(getattr(self.cfg, "reuse_existing", False)) and not force:
             cached = self._load_cached_result(fingerprint)
@@ -152,16 +157,13 @@ class ObjectTrackingGenerator:
             triangulation_document = triangulation_report.pop("document")
             pose_document = self._propagate_object_poses(
                 triangulation_document,
-                raw_manipulation,
+                sorted(training_frames),
             )
-            training_report = self._write_training_data(
-                pose_document,
-                triangulation_document,
-                frame_data,
-                images,
-                fps,
-            )
-            qa_report = ObjectPoseQAExporter(self.pose_dir).export(
+            qa_report = ObjectPoseQAExporter(
+                self.pose_dir,
+                png_path=self.object_centric_png_path,
+                ply_path=self.object_centric_ply_path,
+            ).export(
                 triangulation_document,
                 pose_document,
             )
@@ -170,7 +172,11 @@ class ObjectTrackingGenerator:
                 "dynamic_frames": pose_document["dynamic_frame_count"],
                 "path": self._relative_path(self.object_pose_path),
             }
-            triangulation_report["training_data"] = training_report
+            triangulation_report["training_data"] = {
+                "status": "pending",
+                "frames": len(training_frames),
+                "path": self._relative_path(self.training_data_dir),
+            }
             triangulation_report["object_centric_qa"] = {
                 **qa_report,
                 "ply": self._relative_path(qa_report["ply"]),
@@ -184,6 +190,8 @@ class ObjectTrackingGenerator:
                 "video_path": str(self.unit.video_path), "prompts": self.prompts,
                 "fps": fps, "object_centric_frames": object_centric,
                 "raw_manipulation_frames": raw_manipulation,
+                "training_frames": sorted(training_frames),
+                "finished_frames": sorted(finished_frames),
                 "tracking_frames": tracking_sequence,
                 "input_fingerprint": fingerprint,
                 "outputs": {
@@ -194,7 +202,7 @@ class ObjectTrackingGenerator:
                     "cotracker_video": self._relative_path(self.cotracker_video_path),
                     "triangulation": self._relative_path(self.triangulation_path),
                     "object_poses": self._relative_path(self.object_pose_path),
-                    "training_data": training_report["path"],
+                    "training_data": self._relative_path(self.training_data_dir),
                     "object_centric_ply": self._relative_path(
                         self.object_centric_ply_path
                     ),
@@ -316,24 +324,6 @@ class ObjectTrackingGenerator:
                 or object_poses.get("initial_heading") != ARIA_MPS_INITIAL_HEADING
             ):
                 return None
-            for item in object_poses.get("frames", []):
-                training_path = (
-                    self.training_data_dir
-                    / f"{int(item['frame_idx']):05d}"
-                    / "training_data.json"
-                )
-                if not training_path.is_file() or training_path.stat().st_size == 0:
-                    return None
-                with training_path.open("r", encoding="utf-8") as stream:
-                    training_data = json.load(stream)
-                if (
-                    training_data.get("schema_version") != 1
-                    or training_data.get("world_frame") != ARIA_MPS_WORLD_FRAME
-                    or training_data.get("world_origin") != ARIA_MPS_WORLD_ORIGIN
-                    or training_data.get("initial_heading")
-                    != ARIA_MPS_INITIAL_HEADING
-                ):
-                    return None
             if not object_poses.get("frames") or object_poses.get("anchor_key") is None:
                 return None
             frames = []
@@ -388,6 +378,27 @@ class ObjectTrackingGenerator:
             for frame in self.phase_result.frames
             if frame.mode == OPERATION_MODE
         })
+
+    def _training_frame_sets(self, operation_frames):
+        """Return operation frames plus the configured terminal tail."""
+        operation_frames = sorted({int(frame) for frame in operation_frames})
+        if not operation_frames:
+            raise ValueError("Cannot build training frames without operation frames")
+        dataset_cfg = OmegaConf.select(self.cfg, "dataset_generation", default=None)
+        tail_count = max(
+            0,
+            int(getattr(dataset_cfg, "finished_tail_frames", 5))
+            if dataset_cfg is not None
+            else 5,
+        )
+        last_operation = operation_frames[-1]
+        following = sorted(
+            int(frame.frame_idx)
+            for frame in self.phase_result.frames
+            if int(frame.frame_idx) > last_operation
+        )
+        finished_frames = set(following[:tail_count])
+        return set(operation_frames) | finished_frames, finished_frames
 
     @staticmethod
     def _contiguous_runs(frame_indices):
@@ -447,7 +458,16 @@ class ObjectTrackingGenerator:
                 if idx not in requested_set:
                     continue
                 vio_frame = self._vio_frame(idx)
-                frame_dir = self.all_data_dir / f"{idx:05d}"
+                frame_dir = self.store.frame_dir(
+                    idx,
+                    int(idx) in getattr(self, "training_frames", set()),
+                )
+                self.store.write_image(
+                    idx,
+                    "rgb.png",
+                    image,
+                    int(idx) in getattr(self, "training_frames", set()),
+                )
                 vis, _, raw_objects = self.dinosam.process_and_save(
                     image,
                     self.prompts,
@@ -513,7 +533,7 @@ class ObjectTrackingGenerator:
             points, vis = selector.select_from_mask(mask, image_bgr=images[ref_index])
             if len(points) == 0:
                 raise ValueError(f"No keypoints selected for object: {object_data.key}")
-            vis_path = self.vis_dir / f"kptsselector_vis_{object_data.key}.png"
+            vis_path = self.object_vis_dir / f"kptsselector_vis_{object_data.key}.png"
             if bool(self.cfg.output.export_keypoints_vis):
                 cv2.imwrite(str(vis_path), vis)
             objects[object_data.key] = {"prompt": object_data.prompt, "points": points.tolist(), "count": len(points), "mask_path": str(object_data.mask_path), "vis_path": str(vis_path)}
@@ -594,13 +614,19 @@ class ObjectTrackingGenerator:
                 "visibility": [value["visibility"][index] for index in selected_positions],
             }
         selected_images = [images[index] for index in selected_positions]
-        triangulator = self.triangulator or ObjectTriangulator(self.unit_dir, self.cfg.triangulator)
+        triangulator = self.triangulator or ObjectTriangulator(
+            self.unit_dir,
+            self.cfg.triangulator,
+            output_dir=self.triangulation_dir,
+        )
         document, qa = triangulator.triangulate(
             selected_document,
             selected_images,
             vio_result=self.vio_result,
         )
         triangulator.save_outputs(document, qa)
+        if not cv2.imwrite(str(self.triangulation_qa_path), qa):
+            raise IOError(f"Unable to write triangulation QA image: {self.triangulation_qa_path}")
         return {
             "pose_method": document["pose_method"],
             "frames": len(document["frames"]),

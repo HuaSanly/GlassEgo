@@ -101,7 +101,7 @@ class Cam:
     def save_aria_cam_json(self, label: str) -> None:
         """
         将单个帧图像和每帧 JSON 元数据保存到文件系统。
-        数据保存在[mps_path]/aria/all_data/[idx]/中。
+        数据保存在数据单元的 ``preprocess/temp_data/<idx>/`` 中。
 
         参数：
             label (str): 相机流的标识符（例如，'rgb'）。
@@ -109,7 +109,7 @@ class Cam:
         self._validate_world_contract()
         for idx in range(len(self.tss)):
             # 为特定框架定义目录
-            frame_dir = os.path.join(self.data_path, "preprocess", "all_data", f"{idx:05d}")
+            frame_dir = os.path.join(self.data_path, "preprocess", "temp_data", f"{idx:05d}")
             os.makedirs(frame_dir, exist_ok=True)
             img_path = os.path.join(frame_dir, f"{label}.png")
 
@@ -136,7 +136,7 @@ class Cam:
                 "c2w": self._safe_list(cam.c2w),
                 "c2d": self._safe_list(cam.c2d),
                 "d2w": self._safe_list(cam.d2w),
-                f"{label}_path": os.path.join("preprocess", "all_data", f"{idx:05d}", f"{label}.png"),
+                f"{label}_path": os.path.join("preprocess", "temp_data", f"{idx:05d}", f"{label}.png"),
                 "fps": self.fps
             }
 
@@ -155,7 +155,8 @@ class Cam:
         参数：
             label (str): 相机流的标识符。
         """
-        save_path = os.path.join(self.data_path, "preprocess", f"aria_cam_{label}_config.json")
+        save_path = os.path.join(self.data_path, "preprocess", "vis", "camera", f"aria_cam_{label}_config.json")
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
         summary_data = {
             "schema_version": 1,
             "camera_frame": self.camera_frame,

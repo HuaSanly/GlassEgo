@@ -276,7 +276,7 @@ class Hands:
         """将所有手部跟踪状态序列化到单独的帧 JSON 文件中。"""
         self._validate_world_contract()
         for i in range(len(self.tss)):
-            frame_dir = os.path.join(self.mps_path, "preprocess", "all_data", f"{i:05d}")
+            frame_dir = os.path.join(self.mps_path, "preprocess", "temp_data", f"{i:05d}")
             os.makedirs(frame_dir, exist_ok=True)
             data = self.hands[i]
 
@@ -345,7 +345,7 @@ class Hands:
         """
         self._validate_world_contract()
         for i in range(len(self.tss)):
-            frame_dir = os.path.join(self.mps_path, "preprocess", "all_data", f"{i:05d}")
+            frame_dir = os.path.join(self.mps_path, "preprocess", "temp_data", f"{i:05d}")
             os.makedirs(frame_dir, exist_ok=True)
             data = self.hands[i]
 

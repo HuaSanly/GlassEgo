@@ -67,3 +67,29 @@ output:
   export_tracks_vis: true
   export_gif: false
   gif_frame_ratio: 10
+
+lama:
+  enabled: true
+  model:
+    repo_id: Carve/LaMa-ONNX
+    filename: lama_fp32.onnx
+  input_size: 512
+  mask_dilation: 9
+  output:
+    export_video: true
+    export_gif: false
+    gif_frame_ratio: 10
+
+visualkpts:
+  enabled: true
+  visualkpts_gripper_width_max: 0.18
+  visualkpts_gripper_width_min: 0.05
+  visualkpts_gripper_finger_len: 0.08
+  visualkpts_gripper_root_depth: 0.08
+  visualkpts_radius_current: 4
+  visualkpts_white_core_radius: 1
+  obj_colors: [[255, 255, 0], [0, 255, 0], [255, 0, 255], [0, 0, 255]]
+  output:
+    export_video: true
+    export_gif: false
+    gif_frame_ratio: 10

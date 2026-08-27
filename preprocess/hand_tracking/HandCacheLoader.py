@@ -69,13 +69,11 @@ def load_cached_hands(
 
     frames = []
     for frame_idx, timestamp_ns in enumerate(timestamps):
-        path = (
-            unit_dir
-            / "preprocess"
-            / "all_data"
-            / f"{frame_idx:05d}"
-            / filename
+        candidates = (
+            unit_dir / "preprocess" / "temp_data" / f"{frame_idx:05d}" / filename,
+            unit_dir / "preprocess" / "all_data" / f"{frame_idx:05d}" / filename,
         )
+        path = next((candidate for candidate in candidates if candidate.is_file()), candidates[0])
         if not path.is_file():
             raise FileNotFoundError(f"Cached hand frame is missing: {path}")
         with path.open("r", encoding="utf-8") as stream:

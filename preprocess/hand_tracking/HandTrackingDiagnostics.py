@@ -31,7 +31,7 @@ class HandTrackingDiagnostics:
         self.cfg = cfg
         self.detector_backend = detector_backend
         self.frame_count = int(frame_count)
-        self.output_dir = self.unit_dir / "preprocess" / "hand_diagnostics"
+        self.output_dir = self.unit_dir / "preprocess" / "vis" / "hands"
         self.result = HandDiagnosticsResult()
 
     def start_frame(self, frame_idx: int, timestamp_ns: int) -> HandFrameDiagnostic:
@@ -598,9 +598,8 @@ class HandTrackingDiagnostics:
         if first is None:
             raise ValueError("The first camera frame is missing")
         height, width = first.shape[:2]
-        vis_dir = self.output_dir / "vis"
-        vis_dir.mkdir(parents=True, exist_ok=True)
-        save_path = vis_dir / "hamer_hands_diagnostics.mp4"
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        save_path = self.unit_dir / "preprocess" / "vis" / "hamer_hands_diagnostics.mp4"
         writer = cv2.VideoWriter(
             str(save_path),
             cv2.VideoWriter_fourcc(*"mp4v"),

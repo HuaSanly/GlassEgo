@@ -36,11 +36,12 @@ class PhaseSegmentationGenerator:
         self.unit_dir = Path(unit_dir).expanduser().resolve()
         self.video_path = Path(video_path).expanduser().resolve()
         self.cfg = cfg
-        self.output_dir = self.unit_dir / "preprocess" / "phases"
+        self.output_dir = self.unit_dir / "preprocess" / "temp_data"
         self.result_path = self.output_dir / "phases.json"
-        self.report_path = self.output_dir / "report.json"
-        self.analysis_path = self.output_dir / "phases_analysis.png"
-        self.video_path_out = self.output_dir / cfg.output.video_filename
+        self.vis_dir = self.unit_dir / "preprocess" / "vis" / "phases"
+        self.report_path = self.vis_dir / "report.json"
+        self.analysis_path = self.vis_dir / "phases_analysis.png"
+        self.video_path_out = self.unit_dir / "preprocess" / "vis" / cfg.output.video_filename
 
     def get_phases(
         self,
@@ -343,6 +344,7 @@ class PhaseSegmentationGenerator:
 
     def _save_outputs(self, sequence: PhaseSequence) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.vis_dir.mkdir(parents=True, exist_ok=True)
         if bool(self.cfg.output.export_json):
             self._atomic_write_json(self.result_path, sequence.to_dict())
         self._atomic_write_json(self.report_path, sequence.summary)
