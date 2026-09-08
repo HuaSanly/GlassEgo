@@ -29,7 +29,7 @@
 ### `data/`
 
 - 作为原始输入和预处理产物的运行时数据根目录，不存放源代码。
-- 每个一级子目录代表一个独立处理单元，例如 `data/1/`。
+- 每个一级子目录代表一个 task，二级子目录代表独立处理单元，例如 `data/task_a/unit_1/`。
 - 当前每个处理单元只允许包含一个直属视频文件；可附带 `poses.json`、`pose.json` 或 `camera_poses.json`。
 - 单元根目录中的兼容姿态文件当前只会被扫描并登记；主流水线的世界位姿由 Basalt VIO 生成并统一转换为 Aria MPS。
 - 预处理产物写入同一单元的 `preprocess/` 子目录，包括逐帧 JSON、分析图和可视化视频。
@@ -40,7 +40,7 @@
 - 负责原始传感器数据采集、设备接入和采集格式封装；`rokidglass3/calibration/` 提供离线标定工具，实时采集实现仍待接入。
 - 设备专属实现放入对应子目录，例如 `datacollection/rokidglass3/`，不要把设备分支散落到通用预处理代码中。
 - 采集模块只负责生成可追溯的原始数据单元，不执行手部推理、离线优化或训练。
-- 新采集结果应遵循 `data/<unit>/` 布局，并保留原始时间戳和标定信息。
+- 新采集结果应遵循 `data/<task>/<unit>/` 布局，并保留原始时间戳和标定信息。
 
 ### `preprocess/`
 
@@ -73,9 +73,9 @@
 
 ### `training/`
 
-- 负责训练、验证和训练侧评估；当前目录尚未形成可运行实现。
-- 训练代码消费 `data/<unit>/preprocess/` 下的稳定产物，不应反向承担数据采集或预处理推理职责。
-- 训练检查点、日志和实验产物不得提交到源码目录，除非它们是明确要求的小型测试夹具。
+- 负责训练、验证和训练侧评估。
+- 训练代码消费 `data/<task>/<unit>/preprocess/all_data/` 下的稳定产物，不应反向承担数据采集或预处理推理职责。
+- 训练检查点、日志和实验产物统一写入 `runs/<task>/[<exp>/]<job>/`，不得提交到源码目录。
 
 ### `utils/`
 
@@ -84,10 +84,15 @@
 - 手部专属算法、批处理编排和模型生命周期逻辑必须留在 `preprocess/hand_tracking/`，不要下沉到 `utils/`。
 - 新增工具前先确认存在真实复用需求；避免为了单次调用创建通用抽象或引入循环依赖。
 
+### `ui/`
+- 可视化子项目，和主目录解耦
+- 在主仓库工作的AGENT，不允许改动ui子模块
+- 同样，ui子模块工作的AGENT，不被允许修改主目录
+
 ### 目标数据流
 
 ```text
-datacollection/ -> data/<unit>/ -> preprocess/ -> data/<unit>/preprocess/ -> training/
+datacollection/ -> data/<task>/<unit>/ -> preprocess/ -> data/<task>/<unit>/preprocess/all_data/ -> training/
 ```
 
 - 当前只有数据单元扫描和手部预处理已经形成实现；采集端与训练端尚未贯通。

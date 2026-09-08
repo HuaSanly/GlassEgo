@@ -10,11 +10,24 @@ from preprocess.data_types.VIOTypes import (
 
 OPERATION_MODE = 0
 NON_OPERATION_MODE = 1
+FINISHED_MODE = 2
 PHASE_NAMES = {
     OPERATION_MODE: "OPERATION",
     NON_OPERATION_MODE: "NON_OPERATION",
+    FINISHED_MODE: "FINISHED",
 }
-PHASE_SCHEMA_VERSION = 3
+PHASE_SCHEMA_VERSION = 4
+
+FORCED_NON_OPERATION_PREFIX_FRAMES = 120
+MIN_CLASSIFIED_MIDDLE_FRAMES = 50
+FINISHED_TAIL_FRAMES = 10
+
+# 120 fixed non-operation frames + at least 50 classified frames + 10 finished frames.
+MIN_UNIT_FRAME_COUNT = (
+    FORCED_NON_OPERATION_PREFIX_FRAMES
+    + MIN_CLASSIFIED_MIDDLE_FRAMES
+    + FINISHED_TAIL_FRAMES
+)
 
 
 @dataclass(frozen=True)
@@ -40,6 +53,10 @@ class PhaseFrame:
         return self.mode == OPERATION_MODE
 
     @property
+    def is_finished(self) -> bool:
+        return self.mode == FINISHED_MODE
+
+    @property
     def mode_name(self) -> str:
         return PHASE_NAMES.get(self.mode, "UNKNOWN")
 
@@ -51,6 +68,7 @@ class PhaseFrame:
             "mode_name": self.mode_name,
             "phase": self.mode_name,
             "is_operation": self.is_operation,
+            "is_finished": self.is_finished,
             "linear_speed_mps": float(self.linear_speed_mps),
             "angular_speed_rad_s": float(self.angular_speed_rad_s),
             "yaw_unwrapped_deg": float(self.yaw_unwrapped_deg),

@@ -7,7 +7,7 @@
 每次连续录制对应一个独立数据单元：
 
 ```text
-data/<unit>/
+data/<task>/<unit>/
 ├── video.mp4
 ├── camera.csv
 ├── imu.csv
@@ -133,7 +133,12 @@ Aria MPS 相机位姿下的多视图三角化。
 `0.20 m` 时，保存手到物体的刚性变换并随手部世界位姿传播。松手后对象保留最后位姿。
 全局中间结果写入 `preprocess/temp_data/`，质量检查图写入 `preprocess/vis/objects/`。
 
-LaMa 和 VisualKpts 完成后，DatasetGen 只为训练帧写入：
+阶段划分结果使用 schema 4，并定义 `OPERATION`、`NON_OPERATION` 和 `FINISHED` 三种阶段。
+按时间排序后，前 120 帧固定为 `NON_OPERATION`，最后 10 帧固定为 `FINISHED`，中间帧
+由阶段算法判定为 `OPERATION` 或 `NON_OPERATION`。对象训练帧为 `OPERATION` 与 `FINISHED`
+的并集；普通 `NON_OPERATION` 帧不进入对象传播、LaMa、VisualKpts 或 DatasetGen。
+
+LaMa 和 VisualKpts 完成后，DatasetGen 只为上述对象训练帧写入：
 
 ```text
 preprocess/
@@ -149,18 +154,20 @@ preprocess/
 └── vis/                     # 按模块存放 PNG/JSON/LOG，MP4 直接位于此目录
 ```
 
-`training_data.json` 的 `metadata.is_finished` 保持二分类阶段不变，仅在最后一个操作帧
-之后的固定尾帧（默认 5 帧）写为 `1.0`，其他训练帧写为 `0.0`。
+`training_data.json` 的 `metadata.is_finished` 仅由阶段标签决定：`FINISHED` 帧写为 `1.0`，
+`OPERATION` 帧写为 `0.0`，不得再根据最后一个操作帧推导完成尾段。
 
 ## 7. 最小有效性检查
 
 一个数据单元至少应通过以下检查：
 
-1. `video.mp4` 的可解码帧数等于 `camera.csv` 的数据行数。
-2. `frame_idx` 连续，相机时间戳单调递增。
-3. 每种 IMU 的 `sequence` 和 `timestamp_ns` 单调递增。
-4. 标定分辨率与视频一致，IMU 时间范围覆盖整个视频。
-5. 持久化 VIO 和下游世界坐标产物声明 `aria_mps_x_right_y_up_z_backward`。
+1. VIO 启动前顺序解码视频；少于 180 个可解码帧的数据单元跳过。该下限由 120 帧固定
+   非操作阶段、至少 50 帧算法判定区间和 10 帧固定完成阶段组成。
+2. `video.mp4` 的可解码帧数等于 `camera.csv` 的数据行数。
+3. `frame_idx` 连续，相机时间戳单调递增。
+4. 每种 IMU 的 `sequence` 和 `timestamp_ns` 单调递增。
+5. 标定分辨率与视频一致，IMU 时间范围覆盖整个视频。
+6. 持久化 VIO 和下游世界坐标产物声明 `aria_mps_x_right_y_up_z_backward`。
 
 RTP 时间戳、MP4 PTS、主机接收时间和 Unix 时间可以用于采集过程中的调试与帧配对，但完成 `camera.csv` 后不属于长期数据协议。
 

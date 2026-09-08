@@ -9,9 +9,14 @@ import numpy as np
 from omegaconf import OmegaConf
 from scipy.spatial.transform import Rotation
 
-from data_types.HandsTypes import Hands
+from preprocess.data_types.HandsTypes import Hands
 from preprocess.data_types.PhaseTypes import (
     CandidateSegment,
+    FINISHED_MODE,
+    FINISHED_TAIL_FRAMES,
+    FORCED_NON_OPERATION_PREFIX_FRAMES,
+    MIN_CLASSIFIED_MIDDLE_FRAMES,
+    MIN_UNIT_FRAME_COUNT,
     NON_OPERATION_MODE,
     OPERATION_MODE,
     PHASE_NAMES,
@@ -70,6 +75,15 @@ class PhaseSegmentationGenerator:
         frame_indices, timestamps, linear_speed, angular_speed, yaw = self._kinematics(
             trajectory.frames
         )
+        if len(frame_indices) < MIN_UNIT_FRAME_COUNT:
+            raise ValueError(
+                "Phase segmentation requires at least "
+                f"{MIN_UNIT_FRAME_COUNT} frames "
+                f"({FORCED_NON_OPERATION_PREFIX_FRAMES} fixed non-operation + "
+                f"{MIN_CLASSIFIED_MIDDLE_FRAMES} classified + "
+                f"{FINISHED_TAIL_FRAMES} finished); "
+                f"got {len(frame_indices)}"
+            )
         operation_cfg = self.cfg.operation
         feature_window = int(operation_cfg.feature_window_frames)
         if feature_window < 1:
@@ -122,13 +136,8 @@ class PhaseSegmentationGenerator:
             float(operation_cfg.hand_operation_weight),
             float(operation_cfg.no_hand_weight),
         )
-        mode = PhaseSegmentationOps.classify_binary_phases(
-            non_operation_score,
-            float(operation_cfg.non_operation_enter_threshold),
-            float(operation_cfg.non_operation_exit_threshold),
-            int(operation_cfg.non_operation_enter_frames),
-            int(operation_cfg.non_operation_exit_frames),
-            int(operation_cfg.min_non_operation_frames),
+        mode, operation_confidence, non_operation_confidence = (
+            self._classify_phases(non_operation_score, operation_cfg)
         )
 
         frames = tuple(
@@ -139,8 +148,8 @@ class PhaseSegmentationGenerator:
                 linear_speed_mps=float(linear_speed[index]),
                 angular_speed_rad_s=float(angular_speed[index]),
                 yaw_unwrapped_deg=float(yaw[index]),
-                operation_confidence=float(1.0 - non_operation_score[index]),
-                non_operation_confidence=float(non_operation_score[index]),
+                operation_confidence=float(operation_confidence[index]),
+                non_operation_confidence=float(non_operation_confidence[index]),
                 camera_motion_score=float(camera_motion_score[index]),
                 hand_presence_score=self._optional_score(
                     hand_evidence["presence"],
@@ -191,6 +200,7 @@ class PhaseSegmentationGenerator:
             },
             "operation_ratio": float(np.mean(mode == OPERATION_MODE)),
             "non_operation_ratio": float(np.mean(mode == NON_OPERATION_MODE)),
+            "finished_ratio": float(np.mean(mode == FINISHED_MODE)),
             "candidate_segment_count": len(candidate_segments),
             "config": OmegaConf.to_container(self.cfg, resolve=True),
         }
@@ -201,6 +211,37 @@ class PhaseSegmentationGenerator:
         )
         self._save_outputs(sequence)
         return sequence
+
+    @staticmethod
+    def _classify_phases(non_operation_score: np.ndarray, operation_cfg):
+        scores = np.asarray(non_operation_score, dtype=np.float64).reshape(-1)
+        if len(scores) < MIN_UNIT_FRAME_COUNT:
+            raise ValueError(
+                f"Phase classification requires at least {MIN_UNIT_FRAME_COUNT} frames"
+            )
+
+        middle_start = FORCED_NON_OPERATION_PREFIX_FRAMES
+        middle_end = len(scores) - FINISHED_TAIL_FRAMES
+        middle_mode = PhaseSegmentationOps.classify_binary_phases(
+            scores[middle_start:middle_end],
+            float(operation_cfg.non_operation_enter_threshold),
+            float(operation_cfg.non_operation_exit_threshold),
+            int(operation_cfg.non_operation_enter_frames),
+            int(operation_cfg.non_operation_exit_frames),
+            int(operation_cfg.min_non_operation_frames),
+            initial_non_operation=True,
+        )
+        mode = np.full(len(scores), NON_OPERATION_MODE, dtype=np.int32)
+        mode[middle_start:middle_end] = middle_mode
+        mode[middle_end:] = FINISHED_MODE
+
+        operation_confidence = 1.0 - scores
+        non_operation_confidence = scores.copy()
+        operation_confidence[:middle_start] = 0.0
+        non_operation_confidence[:middle_start] = 1.0
+        operation_confidence[middle_end:] = 0.0
+        non_operation_confidence[middle_end:] = 0.0
+        return mode, operation_confidence, non_operation_confidence
 
     @staticmethod
     def _kinematics(vio_frames):
@@ -418,7 +459,11 @@ class PhaseSegmentationGenerator:
         axes[2].legend(loc="upper right", ncol=4, fontsize=8)
         axes[3].plot(time_s, yaw, color="#6a1b9a", linewidth=1.0)
         axes[3].set_ylabel("yaw (deg)")
-        colors = {OPERATION_MODE: "#c8e6c9", NON_OPERATION_MODE: "#eeeeee"}
+        colors = {
+            OPERATION_MODE: "#c8e6c9",
+            NON_OPERATION_MODE: "#eeeeee",
+            FINISHED_MODE: "#ffe0b2",
+        }
         axes[4].scatter(time_s, modes, c=[colors[mode] for mode in modes], s=4)
         axes[4].set_yticks(sorted(PHASE_NAMES))
         axes[4].set_yticklabels([PHASE_NAMES[index] for index in sorted(PHASE_NAMES)])
@@ -475,6 +520,7 @@ class PhaseSegmentationGenerator:
         color = {
             OPERATION_MODE: (100, 210, 120),
             NON_OPERATION_MODE: (190, 190, 190),
+            FINISHED_MODE: (80, 180, 255),
         }[frame.mode]
         cv2.rectangle(image, (12, 12), (285, 142), (20, 20, 20), -1)
         cv2.rectangle(image, (12, 12), (285, 142), color, 2)

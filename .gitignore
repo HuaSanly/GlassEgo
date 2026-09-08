@@ -1,12 +1,17 @@
 # Local editor and environment
 .vscode/
 .env
+.pytest_cache
+.agents
+.codex
 
 # Runtime data and model assets
 data/
 tem_data/
 models/
+runs/
 tests/
+
 # Python bytecode and caches
 __pycache__/
 *.py[cod]

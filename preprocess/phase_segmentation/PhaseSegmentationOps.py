@@ -95,6 +95,7 @@ class PhaseSegmentationOps:
         enter_frames: int,
         exit_frames: int,
         min_non_operation_frames: int,
+        initial_non_operation: bool = False,
     ) -> np.ndarray:
         """用滞回和最短持续时间输出二值阶段。"""
         scores = np.asarray(non_operation_score, dtype=np.float64).reshape(-1)
@@ -104,7 +105,7 @@ class PhaseSegmentationOps:
             raise ValueError("Phase dwell lengths must be positive")
 
         non_operation = np.zeros(len(scores), dtype=bool)
-        state = False
+        state = bool(initial_non_operation)
         high_count = 0
         low_count = 0
         for index, score in enumerate(scores):
@@ -122,9 +123,13 @@ class PhaseSegmentationOps:
                 non_operation[index - exit_frames + 1 : index + 1] = False
                 low_count = 0
 
+        preserve_leading_run = bool(
+            len(non_operation) and initial_non_operation and non_operation[0]
+        )
         non_operation = PhaseSegmentationOps.remove_short_true_runs(
             non_operation,
             min_non_operation_frames,
+            preserve_leading_run=preserve_leading_run,
         )
         return non_operation.astype(np.int32)
 
@@ -145,9 +150,17 @@ class PhaseSegmentationOps:
         return segments
 
     @staticmethod
-    def remove_short_true_runs(mask: np.ndarray, min_length: int) -> np.ndarray:
+    def remove_short_true_runs(
+        mask: np.ndarray,
+        min_length: int,
+        preserve_leading_run: bool = False,
+    ) -> np.ndarray:
         result = np.asarray(mask, dtype=bool).copy()
         for start, end, value in PhaseSegmentationOps.find_segments(result):
-            if value and end - start + 1 < min_length:
+            if (
+                value
+                and end - start + 1 < min_length
+                and not (preserve_leading_run and start == 0)
+            ):
                 result[start : end + 1] = False
         return result

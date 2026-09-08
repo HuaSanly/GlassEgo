@@ -90,3 +90,11 @@ rerun-sdk>=0.18
 
 # ── 网页 / 演示 ──
 gradio>=5.0
+
+# ── UI（PyQt5 + Fluent 录制/审核客户端，位于 ui/）──
+# 说明：PyQt-Fluent-Widgets 官方 PyPI 包以 PyQt5 为绑定；aiortc 附带 PyAV(av) 提供 H.264 解码与 x264 编码。
+PyQt5>=5.15.10
+PyQt-Fluent-Widgets>=1.5
+aiortc>=1.9
+aiohttp>=3.9
+pyqtgraph>=0.13

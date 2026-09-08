@@ -48,7 +48,6 @@ cotracker:
 triangulator:
   pose_method:
     # Add per-object overrides such as `obj_can: vlm` when semantic pose is needed.
-    obj_can: vlm
     default: vlm
   vlm_crop_padding_px: 40
   vlm_remove_background: true
@@ -82,13 +81,32 @@ lama:
 
 visualkpts:
   enabled: true
+  draw_axes: false
   visualkpts_gripper_width_max: 0.18
   visualkpts_gripper_width_min: 0.05
   visualkpts_gripper_finger_len: 0.08
   visualkpts_gripper_root_depth: 0.08
+  visualkpts_pts_per_line: 6
+  visualkpts_trail_len: 0
+  visualkpts_trail_step: 1
+  visualkpts_trail_alpha_min: 0.30
+  visualkpts_trail_alpha_max: 0.90
+  visualkpts_trail_thick_min: 1
+  visualkpts_trail_thick_max: 4
+  visualkpts_obj_motion_th: 10.0
+  visualkpts_axes_len: 0.06
   visualkpts_radius_current: 4
   visualkpts_white_core_radius: 1
+  color_hand_1_line: [0, 255, 255]
+  color_hand_2_line: [0, 160, 255]
+  color_hand_3_line: [0, 60, 255]
+  color_hand_4_line: [0, 0, 255]
+  color_hand_closed_1: [255, 255, 255]
+  color_hand_closed_2: [255, 255, 255]
+  color_hand_closed_3: [255, 0, 255]
+  color_hand_closed_4: [255, 0, 255]
   obj_colors: [[255, 255, 0], [0, 255, 0], [255, 0, 255], [0, 0, 255]]
+  color_object_trail: [200, 150, 0]
   output:
     export_video: true
     export_gif: false

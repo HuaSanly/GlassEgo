@@ -1,6 +1,7 @@
 import json
 import gc
 import sys
+import tempfile
 from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
 
@@ -25,7 +26,14 @@ from utils.utils_math import time_it
 from utils.utils_artifact_store import FrameArtifactStore
 from data_types.HandsTypes import Hands
 from preprocess.data_types.ObjectTypes import ObjectTrackingResult
-from preprocess.data_types.PhaseTypes import OPERATION_MODE, PhaseSequence
+from preprocess.data_types.PhaseTypes import (
+    FINISHED_TAIL_FRAMES,
+    FORCED_NON_OPERATION_PREFIX_FRAMES,
+    MIN_CLASSIFIED_MIDDLE_FRAMES,
+    MIN_UNIT_FRAME_COUNT,
+    OPERATION_MODE,
+    PhaseSequence,
+)
 from preprocess.data_types.VIOTypes import (
     ARIA_MPS_INITIAL_HEADING,
     ARIA_MPS_WORLD_FRAME,
@@ -58,6 +66,14 @@ class PreprocessPipeline:
             hands = None
             phase_result = None
             try:
+                preflight = self.preflight_unit(unit)
+                if preflight["status"] == "skipped":
+                    print(
+                        "║ [Preflight] Skipping unit: "
+                        f"{unit.unit_dir} ({preflight['reason']})",
+                        flush=True,
+                    )
+                    continue
                 vio_result = self.process_vio(unit)
                 hands = self.process_hands(unit, vio_result)
                 phase_result = self.process_phases(unit, vio_result, hands)
@@ -100,6 +116,58 @@ class PreprocessPipeline:
                 vio_result = None
                 self._release_unit_resources()
 
+    def preflight_unit(self, unit: ProcessUnit) -> dict:
+        """Decode enough frames to reject undersized units before VIO starts."""
+        if not isinstance(unit, ProcessUnit):
+            raise TypeError("unit must be a ProcessUnit")
+
+        capture = cv2.VideoCapture(str(unit.video_path))
+        if not capture.isOpened():
+            capture.release()
+            raise RuntimeError(f"Cannot open input video: {unit.video_path}")
+
+        checked_frames = 0
+        try:
+            while checked_frames < MIN_UNIT_FRAME_COUNT:
+                ok, _ = capture.read()
+                if not ok:
+                    break
+                checked_frames += 1
+        finally:
+            capture.release()
+
+        accepted = checked_frames >= MIN_UNIT_FRAME_COUNT
+        if accepted:
+            reason_code = None
+            reason = f"decoded at least {MIN_UNIT_FRAME_COUNT} frames"
+        else:
+            reason_code = "insufficient_frames"
+            reason = (
+                f"decoded {checked_frames} frames, requires {MIN_UNIT_FRAME_COUNT} "
+                f"({FORCED_NON_OPERATION_PREFIX_FRAMES} non-operation + "
+                f"{MIN_CLASSIFIED_MIDDLE_FRAMES} classified + "
+                f"{FINISHED_TAIL_FRAMES} finished)"
+            )
+        report = {
+            "status": "accepted" if accepted else "skipped",
+            "reason_code": reason_code,
+            "reason": reason,
+            "threshold_frames": MIN_UNIT_FRAME_COUNT,
+            "checked_frames": checked_frames,
+            "phase_frame_requirements": {
+                "non_operation_prefix": FORCED_NON_OPERATION_PREFIX_FRAMES,
+                "classified_middle_minimum": MIN_CLASSIFIED_MIDDLE_FRAMES,
+                "finished_tail": FINISHED_TAIL_FRAMES,
+            },
+            "unit_dir": str(unit.unit_dir),
+            "video_path": str(unit.video_path),
+        }
+        self._atomic_write_json(
+            unit.unit_dir / "preprocess" / "vis" / "preflight" / "report.json",
+            report,
+        )
+        return report
+
     @time_it
     def process_vio(self, unit: ProcessUnit, force: bool = False) -> VIOResult:
         """Process exactly one VIO unit and return aligned camera poses."""
@@ -128,6 +196,30 @@ class PreprocessPipeline:
         if unit.video_path.suffix.lower() not in VIDEO_EXTENSIONS:
             raise ValueError(f"Unsupported video format: {unit.video_path}")
 
+        timestamps = [frame.timestamp_ns for frame in vio_result.trajectory.frames]
+        cache_filename = str(self.cfg.output.json_filename)
+        if bool(getattr(self.cfg.hand_tracking, "reuse_existing", False)):
+            from hand_tracking.HandCacheLoader import load_cached_hands
+
+            try:
+                hands = load_cached_hands(
+                    unit.unit_dir,
+                    timestamps,
+                    filename=cache_filename,
+                )
+                print(
+                    f"[Hands] Reusing {len(hands.hands)} aligned cached frames "
+                    f"from {unit.unit_dir}",
+                    flush=True,
+                )
+                return hands
+            except (FileNotFoundError, ValueError) as error:
+                print(
+                    f"[Hands] Cached frames are unavailable or stale ({error}); "
+                    "running hand inference",
+                    flush=True,
+                )
+
         if not self.cfg.hand_tracking.enabled:
             hand_input = OmegaConf.select(
                 self.cfg,
@@ -138,7 +230,6 @@ class PreprocessPipeline:
                 return None
             from hand_tracking.HandCacheLoader import load_cached_hands
 
-            timestamps = [frame.timestamp_ns for frame in vio_result.trajectory.frames]
             try:
                 return load_cached_hands(
                     unit.unit_dir,
@@ -271,7 +362,6 @@ class PreprocessPipeline:
         object_cfg = OmegaConf.merge(
             self.cfg.object_tracking,
             {"prompts": prompts},
-            {"dataset_generation": self.cfg.dataset_generation},
         )
 
         from object_tracking.ObjectTrackingGenerator import ObjectTrackingGenerator
@@ -400,7 +490,7 @@ class PreprocessPipeline:
             json.dump(report, stream, indent=2)
 
     def _load_pending_units(self) -> list[ProcessUnit]:
-        """Discover video metadata without decoding any video frames."""
+        """Discover data/<task>/<unit> metadata without decoding video frames."""
         def get_configured_path(key: str) -> Path:
             value = OmegaConf.select(self.cfg, key)
             if not isinstance(value, str) or not value.strip():
@@ -415,34 +505,38 @@ class PreprocessPipeline:
             raise FileNotFoundError(f"Data root not found: {data_root}")
 
         units = []
-        for unit_dir in sorted(path for path in data_root.iterdir() if path.is_dir()):
-            pose_path = next(
-                (
-                    unit_dir / filename
-                    for filename in POSE_FILENAMES
-                    if (unit_dir / filename).is_file()
-                ),
-                None,
-            )
-            videos = sorted(
-                path
-                for path in unit_dir.iterdir()
-                if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
-            )
-            if not videos:
-                continue
-            if len(videos) > 1:
-                raise ValueError(
-                    f"Unit must contain exactly one video: {unit_dir} "
-                    f"(found {len(videos)})"
+        task_dirs = sorted(path for path in data_root.iterdir() if path.is_dir())
+        for task_dir in task_dirs:
+            unit_dirs = sorted(path for path in task_dir.iterdir() if path.is_dir())
+            for unit_dir in unit_dirs:
+                pose_path = next(
+                    (
+                        unit_dir / filename
+                        for filename in POSE_FILENAMES
+                        if (unit_dir / filename).is_file()
+                    ),
+                    None,
                 )
-            units.append(
-                ProcessUnit(
-                    unit_dir=unit_dir,
-                    video_path=videos[0],
-                    pose_path=pose_path,
+                videos = sorted(
+                    path
+                    for path in unit_dir.iterdir()
+                    if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
                 )
-            )
+                if not videos:
+                    continue
+                if len(videos) > 1:
+                    raise ValueError(
+                        "Unit must contain exactly one video: "
+                        f"task={task_dir.name}, unit={unit_dir.name}, "
+                        f"path={unit_dir} (found {len(videos)})"
+                    )
+                units.append(
+                    ProcessUnit(
+                        unit_dir=unit_dir,
+                        video_path=videos[0],
+                        pose_path=pose_path,
+                    )
+                )
         return units
 
 
@@ -466,6 +560,24 @@ class PreprocessPipeline:
         if isinstance(value, (list, tuple)):
             return [PreprocessPipeline._json_safe(item) for item in value]
         return value
+
+    @staticmethod
+    def _atomic_write_json(path: Path, document: dict) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            delete=False,
+        )
+        temporary_path = Path(handle.name)
+        try:
+            with handle:
+                json.dump(document, handle, indent=2, ensure_ascii=True)
+            temporary_path.replace(path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
 
     @staticmethod
     def _load_preprocess_config(

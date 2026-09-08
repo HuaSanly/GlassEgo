@@ -31,7 +31,7 @@ T_cam_imu:
   - 0.0
   - 0.0
   - 1.0
-timeshift_cam_imu: -0.07100836969839247
+timeshift_cam_imu: -0.09
 imu:
   gyro_noise_density: 9.141998445730967e-05
   gyro_random_walk: 4.7278530101656415e-05

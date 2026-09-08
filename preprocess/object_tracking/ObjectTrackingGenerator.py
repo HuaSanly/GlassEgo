@@ -12,7 +12,11 @@ from omegaconf import OmegaConf
 from tqdm import tqdm
 
 from preprocess.data_types.ObjectTypes import ObjectFrameData, ObjectMaskData, ObjectTrackingResult
-from preprocess.data_types.PhaseTypes import OPERATION_MODE, PhaseSequence
+from preprocess.data_types.PhaseTypes import (
+    FINISHED_MODE,
+    OPERATION_MODE,
+    PhaseSequence,
+)
 from preprocess.data_types.VIOTypes import (
     ARIA_MPS_INITIAL_HEADING,
     ARIA_MPS_WORLD_FRAME,
@@ -108,7 +112,7 @@ class ObjectTrackingGenerator:
             raise ValueError("Object tracking requires Aria MPS VIO poses")
         object_centric = self._build_object_centric_indices()
         raw_manipulation = self._raw_manipulation_frames()
-        training_frames, finished_frames = self._training_frame_sets(raw_manipulation)
+        training_frames, finished_frames = self._training_frame_sets()
         self.training_frames = training_frames
         tracking_sequence = self._merge_tracking_frames(
             object_centric,
@@ -379,26 +383,21 @@ class ObjectTrackingGenerator:
             if frame.mode == OPERATION_MODE
         })
 
-    def _training_frame_sets(self, operation_frames):
-        """Return operation frames plus the configured terminal tail."""
-        operation_frames = sorted({int(frame) for frame in operation_frames})
-        if not operation_frames:
-            raise ValueError("Cannot build training frames without operation frames")
-        dataset_cfg = OmegaConf.select(self.cfg, "dataset_generation", default=None)
-        tail_count = max(
-            0,
-            int(getattr(dataset_cfg, "finished_tail_frames", 5))
-            if dataset_cfg is not None
-            else 5,
-        )
-        last_operation = operation_frames[-1]
-        following = sorted(
+    def _training_frame_sets(self):
+        """Return phase-declared operation and finished training frames."""
+        operation_frames = {
             int(frame.frame_idx)
             for frame in self.phase_result.frames
-            if int(frame.frame_idx) > last_operation
-        )
-        finished_frames = set(following[:tail_count])
-        return set(operation_frames) | finished_frames, finished_frames
+            if frame.mode == OPERATION_MODE
+        }
+        if not operation_frames:
+            raise ValueError("Cannot build training frames without operation frames")
+        finished_frames = {
+            int(frame.frame_idx)
+            for frame in self.phase_result.frames
+            if frame.mode == FINISHED_MODE
+        }
+        return operation_frames | finished_frames, finished_frames
 
     @staticmethod
     def _contiguous_runs(frame_indices):

@@ -15,7 +15,7 @@ python datacollection/rokidglass3/calibration/calibration_pipeline.py board
 准备一个相机标定单元：
 
 ```text
-data/camera_calibration/
+data/calibration/camera_calibration/
 ├── video.mp4
 └── camera.csv
 ```
@@ -24,7 +24,7 @@ data/camera_calibration/
 
 ```bash
 python datacollection/rokidglass3/calibration/calibration_pipeline.py camera \
-  --unit data/camera_calibration
+  --unit data/calibration/camera_calibration
 ```
 
 结果写入：
@@ -38,7 +38,7 @@ python datacollection/rokidglass3/calibration/calibration_pipeline.py camera \
 准备一个 IMU 标定单元：
 
 ```text
-data/imu_calibration/
+data/calibration/imu_calibration/
 └── imu.csv
 ```
 
@@ -46,7 +46,7 @@ data/imu_calibration/
 
 ```bash
 python datacollection/rokidglass3/calibration/calibration_pipeline.py imu \
-  --unit data/imu_calibration
+  --unit data/calibration/imu_calibration
 ```
 
 结果写入：
@@ -75,7 +75,7 @@ python datacollection/rokidglass3/calibration/calibration_pipeline.py extrinsic-
 准备一个联合标定单元：
 
 ```text
-data/cam_imu_calibration/
+data/calibration/cam_imu_calibration/
 ├── video.mp4
 ├── camera.csv
 └── imu.csv
@@ -85,7 +85,7 @@ data/cam_imu_calibration/
 
 ```bash
 python datacollection/rokidglass3/calibration/calibration_pipeline.py extrinsic \
-  --unit data/cam_imu_calibration
+  --unit data/calibration/cam_imu_calibration
 ```
 
 成功后检查 `report/extrinsic_kalibr_report.pdf` 和 `report/extrinsic_results.txt` 中的重投影误差、IMU 误差与时间偏移。解析结果写入 `report/extrinsic_report.json`，完整日志写入 `report/extrinsic.log`，并更新 `calibration.yaml` 的 `T_cam_imu` 和 `timeshift_cam_imu`。

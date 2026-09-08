@@ -1,4 +1,4 @@
-"""Shared output paths for frame-scoped preprocessing artifacts."""
+"""Shared paths for preprocessing and training artifacts."""
 
 from __future__ import annotations
 
@@ -57,3 +57,71 @@ class FrameArtifactStore:
         self.temp_data_dir.mkdir(parents=True, exist_ok=True)
         return self.temp_data_dir / filename
 
+
+class TrainingArtifactStore:
+    """Own the output layout for one training run."""
+
+    def __init__(
+        self,
+        runs_root: str | Path,
+        task: str,
+        job: str,
+        experiment: str | None = None,
+    ):
+        parts = [self._validate_segment("task", task)]
+        if experiment:
+            parts.append(self._validate_segment("experiment", experiment))
+        parts.append(self._validate_segment("job", job))
+
+        self.run_dir = Path(runs_root).expanduser().resolve().joinpath(*parts)
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _validate_segment(name: str, value: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"Training {name} must be a non-empty path segment")
+        value = value.strip()
+        if Path(value).name != value or value in {".", ".."}:
+            raise ValueError(f"Training {name} must not contain path separators: {value}")
+        return value
+
+    @property
+    def config_path(self) -> Path:
+        return self.run_dir / "config.json"
+
+    @property
+    def dataset_stats_path(self) -> Path:
+        return self.run_dir / "dataset_stats.json"
+
+    @property
+    def history_path(self) -> Path:
+        return self.run_dir / "train_history.json"
+
+    @property
+    def latest_checkpoint_path(self) -> Path:
+        return self.run_dir / "latest.pt"
+
+    @property
+    def train_curve_path(self) -> Path:
+        return self.run_dir / "train_curve.png"
+
+    @property
+    def eval_curve_path(self) -> Path:
+        return self.run_dir / "eval_curve.png"
+
+    def eval_snapshot_path(self, epoch: int) -> Path:
+        directory = self.run_dir / "eval_snapshots"
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory / f"eval_ep_{int(epoch):04d}.json"
+
+    def eval_render_dir(self, epoch: int, unit_name: str) -> Path:
+        unit_name = self._validate_segment("unit", unit_name)
+        directory = (
+            self.run_dir
+            / "eval_render"
+            / f"epoch_{int(epoch):04d}"
+            / unit_name
+            / "teacher_forced_vis"
+        )
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory

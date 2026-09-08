@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# HumanEgo — 一键式环境设置
+# GlassEgo — 一键式环境设置
 # ==============================================================================
 #
 # 用法：
-#   git clone https://github.com/TX-Leo/HumanEgo.git
-#   cd HumanEgo
-#   conda create -n humanego python=3.11 -y
-#   conda activate humanego
+#   git clone <repository-url>
+#   cd GlassEgo
+#   conda create -n glassego python=3.11 -y
+#   conda activate glassego
 #   bash setup.sh
 #
 # 该脚本的作用：
@@ -116,6 +116,12 @@ rm /tmp/requirements_filtered.txt
 # 确保 numpy 没有降级
 NUMPY_VER=$($PYTHON -c "import numpy; print(numpy.__version__)")
 info "NumPy after install: $NUMPY_VER"
+
+# --- UI 系统依赖（PyQt5 在 Linux 上需要 xcb 平台库）---
+if [ "$(uname -s)" = "Linux" ]; then
+    warn "Linux Qt5 需要 xcb 系统库；若 GUI 启动报 'could not load the Qt platform plugin xcb'，请安装："
+    warn "  sudo apt install libxcb-cursor0 libxcb-xinerama0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0"
+fi
 
 info "[3/7] Core dependencies installed"
 
@@ -293,6 +299,14 @@ check_import "pydantic"              "import pydantic"
 check_import "allantools"            "import allantools"
 
 echo ""
+info "=== UI (ui/) ==="
+check_import "PyQt5"                 "import PyQt5"
+check_import "qfluentwidgets"        "import qfluentwidgets"
+check_import "aiortc (WebRTC)"       "import aiortc"
+check_import "PyAV (H.264)"          "import av"
+check_import "pyqtgraph"             "import pyqtgraph"
+
+echo ""
 info "=== 3D / Pose ==="
 check_import "roma"                  "import roma"
 check_import "smplx"                 "import smplx"
@@ -316,7 +330,7 @@ if [ "$SKIP_HAND" != "1" ]; then
 fi
 
 echo ""
-info "=== HumanEgo Modules ==="
+info "=== GlassEgo Modules ==="
 cd "$PROJECT_ROOT"
 check_import "object OrientAnything"       "from preprocess.object_tracking.OrientAnything import estimate_frame_pca1, estimate_frame_vlm, ORIENT_ANYTHING_AVAILABLE; assert ORIENT_ANYTHING_AVAILABLE"
 check_import "utils.utils_math"           "from utils.utils_math import rotmat_to_o6d, normalize_o6d"
@@ -372,8 +386,8 @@ if [ "$VERIFY_OK" = true ]; then
     echo "  Quick start:"
     echo "    conda activate $CONDA_DEFAULT_ENV"
     echo "    python scripts/download_data.py --task serve_bread --num 2 --input-only   # 下载示例数据"
-    echo "    python -m preprocess.Preprocess --mps_path ./data/serve_bread/aria/mps_serve_bread_000_vrs --task serve_bread   # 预处理"
-    echo "    python -m training.FlowMatchingTrainer --task serve_bread --use_cfg --job HumanEgo   # 训练"
+    echo "    python preprocess/pipeline.py   # 预处理 data/<task>/<unit>"
+    echo "    python -m training.FlowMatchingTrainer --task <task> --job baseline   # 训练"
     echo ""
 else
     step "⚠ Setup finished with some warnings"

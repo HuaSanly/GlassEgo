@@ -27,14 +27,16 @@ You are the user's trusted think tank, composed of four senior experts who provi
 
 ## Project Overview
 
-GlassEgo is an egocentric vision pipeline for AR glasses (Rokid Glass3) that processes visual-inertial data through calibration, VIO (Visual-Inertial Odometry), hand tracking, phase segmentation, and object tracking. The system follows a data collection → preprocessing → training flow.
+GlassEgo is an egocentric vision pipeline for AR glasses (Rokid Glass3) that processes visual-inertial data through calibration, VIO (Visual-Inertial Odometry), hand tracking, phase segmentation, object tracking, dataset generation, and flow-matching policy training. The system follows a data collection → preprocessing → training flow.
 
 **Key Features:**
 - Visual-inertial calibration (camera intrinsics, IMU noise, camera-IMU extrinsics via Kalibr)
 - Monocular VIO using Basalt
 - 3D hand tracking with HaMeR and MediaPipe/ViTPose detection
 - Phase segmentation for motion analysis
-- Object tracking with DINO-SAM and CoTracker
+- Object tracking with DINO-SAM, CoTracker, 3D pose propagation/triangulation, and OrientAnything
+- Dataset generation: per-frame `preprocess/all_data/` training targets (training_data.json + image variants) bridging preprocessing → training
+- Flow-matching policy training (HumanEgo-style, `training.FlowMatchingTrainer`) over hand/object motion
 
 ## Common Commands
 
@@ -63,18 +65,18 @@ python datacollection/rokidglass3/calibration/calibration_pipeline.py board
 
 # 2. Calibrate camera intrinsics
 python datacollection/rokidglass3/calibration/calibration_pipeline.py camera \
-  --unit data/camera_calibration
+  --unit data/calibration/camera_calibration
 
 # 3. Calibrate IMU noise parameters
 python datacollection/rokidglass3/calibration/calibration_pipeline.py imu \
-  --unit data/imu_calibration
+  --unit data/calibration/imu_calibration
 
 # 4. Generate AprilGrid for extrinsics
 python datacollection/rokidglass3/calibration/calibration_pipeline.py extrinsic-board
 
 # 5. Calibrate camera-IMU extrinsics (requires Kalibr installation)
 python datacollection/rokidglass3/calibration/calibration_pipeline.py extrinsic \
-  --unit data/cam_imu_calibration
+  --unit data/calibration/cam_imu_calibration
 
 # 6. Validate calibration file
 python datacollection/rokidglass3/calibration/calibration_pipeline.py validate
@@ -84,19 +86,27 @@ python datacollection/rokidglass3/calibration/calibration_pipeline.py validate
 
 **主预处理流程：**
 ```bash
-# Run full preprocessing pipeline (VIO → hands → phases → objects)
+# Run full preprocessing pipeline (VIO → hands → phases → objects → dataset)
 python preprocess/pipeline.py
 ```
 这是生产环境的预处理入口点，不是测试套件。
 
-自动发现 `data/` 下的数据单元并顺序处理。每个单元必须包含恰好一个视频文件，VIO 阶段还需要 `camera.csv`、`imu.csv` 和 `calibration.yaml`。
+自动发现 `data/<task>/<unit>` 下的数据单元并顺序处理。每个单元必须包含恰好一个视频文件，VIO 阶段还需要 `camera.csv`、`imu.csv` 和 `calibration.yaml`，对象跟踪阶段需要 `object_prompts.yaml`。对象阶段成功后，流水线继续执行 LaMa 修复、VisualKpts 渲染和数据集生成（写入 `preprocess/all_data/`）。
+
+**训练：**
+```bash
+# Train a flow-matching policy (consumes preprocess/all_data/ per-frame targets)
+python -m training.FlowMatchingTrainer --task <task> --use_cfg --job <job> \
+    [--exp <group>] [--epochs N] [--data_num K] ...
+```
+`training/README.md` 是训练侧的权威文档（配置解析、参数参考、添加自定义 task）。训练配置位于 `training/config/<task>/`。
 
 **VIO 独立验证工具：**
 ```bash
 # Run only VIO validation with ground truth comparison
 python preprocess/basalt_pipeline.py \
-  --unit data/1 \
-  --ground_truth data/1/ground_truth.csv \
+  --unit data/<task>/<unit> \
+  --ground_truth data/<task>/<unit>/ground_truth.csv \
   --force
 ```
 
@@ -123,6 +133,7 @@ python tests/test_coordinate_frames.py
 - 坐标系测试验证 Aria MPS 世界坐标系对齐和变换正确性
 - 手部轨迹测试验证 SLERP 插值和世界位姿填充
 - 数值比较使用 `np.testing.assert_allclose` 并设置合适的容差
+- 现有覆盖：坐标系、手部运动学与缓存加载、阶段分割、对象跟踪序列/位姿传播/朝向（`tests/test_object_*.py`、`tests/test_orient_anything_loading.py`、`tests/test_phase_segmentation.py`）
 
 ### Model Weights
 
@@ -146,13 +157,13 @@ PREDOWNLOAD=1 bash setup.sh
 ### Data Flow
 
 ```
-datacollection/ → data/<unit>/ → preprocess/ → data/<unit>/preprocess/ → training/
+datacollection/ → data/<task>/<unit>/ → preprocess/ → data/<task>/<unit>/preprocess/all_data/ → training/
 ```
 
 1. **datacollection/**: Raw sensor data acquisition and calibration tools
-2. **data/<unit>/**: One recording session (video + sensor data + calibration)
-3. **preprocess/**: Processing modules that read from data units and write to `data/<unit>/preprocess/`
-4. **training/**: Consumes preprocessed outputs (not yet implemented)
+2. **data/<task>/<unit>/**: Task-scoped recording session (video + sensor data + calibration + object prompts)
+3. **preprocess/**: Processing modules that read from data units and write to `data/<task>/<unit>/preprocess/`
+4. **training/**: Flow-matching policy training consuming `preprocess/all_data/` per-frame targets
 
 ### Directory Structure
 
@@ -163,20 +174,30 @@ datacollection/ → data/<unit>/ → preprocess/ → data/<unit>/preprocess/ →
 **`preprocess/`**
 - `pipeline.py`: Main preprocessing CLI and coordinator (orchestrates all stages)
 - `basalt_pipeline.py`: Standalone VIO validation tool with trajectory evaluation
-- `config/`: YAML configurations (default, sensors, hand_tracking, vio, phase_segmentation, object_tracking)
-- `data_types/`: Shared data structures (Cam, CamData, Hands, VIOResult, PhaseSequence, ObjectTrackingResult)
+- `DatasetGenerator.py`: Builds per-frame training targets (`training_data.json` + image variants) into `preprocess/all_data/`
+- `config/`: YAML configurations (default, sensors, hand_tracking, vio, phase_segmentation, object_tracking, dataset_generation)
+- `data_types/`: Shared data structures (Cam, CamData, Hands, VIOResult, PhaseSequence, ObjectTrackingResult, hand diagnostic types)
 - `vio/`: Basalt VIO integration (BasaltVIOGenerator, sensor synchronization, pose processing)
-- `hand_tracking/`: HaMeR 3D hand reconstruction, trajectory optimization, visualization
-- `object_tracking/`: DINO-SAM segmentation, CoTracker tracking, 3D triangulation
+- `hand_tracking/`: HaMeR 3D hand reconstruction, trajectory optimization, cache loader, diagnostics, visualization
+- `object_tracking/`: DINO-SAM segmentation, CoTracker tracking, pose propagation/triangulation/QA, OrientAnything, LaMa inpainting, VisualKpts rendering
 - `phase_segmentation/`: Motion phase detection for HumanEgo task structure
+
+**`training/`**
+- `FlowMatchingTrainer.py`: Entry point — CLI, config resolution, train/eval loop, checkpointing (`python -m training.FlowMatchingTrainer`)
+- `FlowMatchingModel.py`: Policy network — flow-matching decoder over Interaction-Centric Tokens (hands + objects)
+- `FlowMatchingDataloader.py`: Builds per-frame samples from `all_data/<idx>/training_data.json`
+- `FlowMatchingEvaluator.py`: Teacher-forced visual evaluator (GT-vs-prediction videos)
+- See `training/README.md` for the full parameter reference. Task configs live under `training/config/<task>/`.
 
 **`utils/`**
 - `utils_math.py`: Math utilities (rotation representations, transformations, timing)
 - `utils_media.py`: Video/image I/O, camera data loading (`build_cam_from_disk`)
 - `utils_vis.py`: Visualization helpers
+- `utils_io.py`: YAML config loading (python-box `ConfigBox`), JSON/image I/O — used by `training/`
+- `utils_artifact_store.py`: `FrameArtifactStore` and `TrainingArtifactStore` — shared output paths for preprocessing and training runs
 
 **`ui/`**
-- User interface components (separate AGENTS.md)
+- User interface components (separate AGENTS.md); not yet implemented — see `ui/AGENTS.md`
 
 ### Key Data Structures
 
@@ -197,6 +218,10 @@ datacollection/ → data/<unit>/ → preprocess/ → data/<unit>/preprocess/ →
 - `Cam.cam`: List of RGB frames (numpy arrays)
 - `Cam.tss`: Frame timestamps aligned with camera poses
 
+**Per-frame training target** (`preprocess/all_data/<frame_idx>/training_data.json`):
+- Produced by `DatasetGenerator` after the object stage: camera/hand/object SE(3) poses, grasp, done flag, and image paths (`rgb*.png` / `mask*.png` variants) — the exact input consumed by `training/`
+- `metadata.is_finished` is written as `1.0` only for frames explicitly labeled `FINISHED` by phase schema 4
+
 ### Configuration System
 
 Configurations are loaded from `preprocess/config/`:
@@ -205,35 +230,41 @@ Configurations are loaded from `preprocess/config/`:
 - `hand_tracking.yaml`: Hand detection and tracking parameters
 - `vio.yaml`: Basalt VIO settings
 - `phase_segmentation.yaml`: Phase detection parameters
-- `object_tracking.yaml`: Object tracking settings
+- `object_tracking.yaml`: Object tracking settings (incl. `lama`, `visualkpts` sub-configs)
+- `dataset_generation.yaml`: Dataset-generation stage flags
 
-All configs are merged in `PreprocessPipeline._load_preprocess_config()` using OmegaConf.
+All configs are merged in `PreprocessPipeline._load_preprocess_config()` using OmegaConf. Note that a second config-loading style exists for `training/` and other consumers: `utils/utils_io.py` `load_cfg`/`load_cfg_recursive` (python-box `ConfigBox`). Keep each loading style with its owning module.
 
 ### Data Unit Protocol
 
-Each data unit follows `DATA_STORAGE_PROTOCOL.md`:
+Each data unit follows `DATA_STORAGE_PROTOCOL.md`. Units are organized two levels deep — `data/<task>/<unit>/` (a task groups one or more recording sessions; `_load_pending_units` walks task dirs then unit dirs):
 
 ```
-data/<unit>/
+data/<task>/<unit>/
 ├── video.mp4               # H.264 encoded, native resolution
 ├── camera.csv              # Frame timestamps (frame_idx, frame_id, rokid_timestamp_ns, device_monotonic_ns)
 ├── imu.csv                 # Raw IMU events (sensor_type, sequence, timestamp_ns, x, y, z)
 ├── calibration.yaml        # Camera intrinsics, distortion, T_cam_imu, IMU noise
+├── object_prompts.yaml     # Object tracking prompts (object stage)
 └── preprocess/             # Output directory
     ├── hands/
     ├── vio/
     ├── phases/
-    └── objects/
+    ├── objects/
+    ├── all_data/           # Dataset generation targets (training_data.json + image variants)
+    ├── temp_data/
+    └── vis/
 ```
 
 ### Processing Stages
 
 1. **VIO** (`process_vio`): Basalt monocular VIO produces camera poses aligned with video frames
 2. **Hands** (`process_hands`): HaMeR generates 3D hand keypoints per frame with trajectory optimization
-3. **Phases** (`process_phases`): Scores VIO and cached hand evidence into binary OPERATION/NON_OPERATION phases
-4. **Objects** (`process_objects`): DINO-SAM + CoTracker for object tracking in phase windows
+3. **Phases** (`process_phases`): Uses fixed NON_OPERATION/FINISHED boundaries and classifies the middle interval as OPERATION or NON_OPERATION
+4. **Objects** (`process_objects`): DINO-SAM + CoTracker for object tracking in phase windows; object pose propagation/triangulation/QA. Follows the HumanEgo static-anchor convention: the first sorted `obj*` is the static anchor, other objects propagate with the hand rigid transform once grasped (grasp distance < 0.20 m)
+5. **Dataset** (object-stage follow-ups, only if objects succeeded): `process_lama` (LaMa inpainting) → `process_visualkpts` (VisualKpts rendering) → `process_dataset` (`DatasetGenerator` writes `preprocess/all_data/` per-frame training targets)
 
-Each stage validates input types, checks configuration flags (`enabled`), and writes outputs to `data/<unit>/preprocess/<stage>/`.
+Each stage validates input types, checks configuration flags (`enabled`), and writes outputs to `data/<task>/<unit>/preprocess/<stage>/`.
 
 ## Development Practices
 
@@ -281,7 +312,7 @@ Each stage validates input types, checks configuration flags (`enabled`), and wr
 
 ## Preprocessing Outputs
 
-每个阶段写入 `data/<unit>/preprocess/<stage>/`：
+每个阶段写入 `data/<task>/<unit>/preprocess/<stage>/`：
 
 **VIO 输出 (`vio/`)：**
 - `poses.json`: 每帧相机位姿，Aria MPS 世界坐标系
@@ -298,6 +329,12 @@ Each stage validates input types, checks configuration flags (`enabled`), and wr
 
 **对象跟踪输出 (`objects/`)：**
 - `objects.json`: 跟踪的对象轨迹及 3D 位置
+- 中间结果（`object_3d_results.json`、`temp_data/`）与质量检查图（`vis/objects/`）见 `DATA_STORAGE_PROTOCOL.md`
+
+**数据集生成输出 (`all_data/`)：**
+- 每帧 `training_data.json`：相机/手/物体 SE(3) 位姿、grasp、done 标记及图像路径
+- 图像变体 `rgb.png`、`rgb_WoArm.png`、`rgb_WArmObjKpts.png`、`rgb_WoArm_WArmObjKpts.png`、`mask_arm.png`、`mask_arm_and_obj.png`（训练端由 `img_name` 选择）
+- `temp_data/`（object-centric 上下文帧）、`vis/`（可视化输出）
 
 ## Data Validation
 
@@ -355,7 +392,8 @@ wc -l camera.csv  # 应该是 nb_read_frames + 1（含表头）
 ## Notes
 
 - `pipeline.py` is the production preprocessing entry point, not a test suite
-- The `training/` directory structure exists but implementation is incomplete
+- `training/` now has a working flow-matching implementation; task configs live under `training/config/<task>/` — `training/README.md` is authoritative for training usage
+- Data units live at `data/<task>/<unit>/` (not `data/<unit>/`); the single-video constraint is enforced per unit by `_load_pending_units`
 - Real-time data collection is not yet integrated; current workflow assumes offline processing
 - Model weights are auto-downloaded on first run unless `PREDOWNLOAD=1` is set during setup
 - Calibration uses ChArUco for camera intrinsics and AprilGrid for extrinsics (Kalibr requirement)
