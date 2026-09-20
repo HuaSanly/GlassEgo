@@ -24,21 +24,36 @@ import torch
 from tqdm import tqdm
 
 from scipy.spatial.transform import Rotation as R
-from typing import Optional, Tuple
-from data_types.HandsTypes import Hands, HandsData, HandData, HandsJointAngles, MidpointFrameBuilder
-from data_types.CamTypes import Cam
-
-
-from hand_tracking.MediaPipeHandDetector import MediaPipeHandDetector
-from hand_tracking.VitPoseHandDetector import VitPoseHandDetector
-from hand_tracking.HaMeRModel import HaMeRModel
-from hand_tracking.HandsOps import HandsOps
-from hand_tracking.HandTrackingDiagnostics import HandTrackingDiagnostics
+from typing import Optional
+try:
+    from data_types.HandsTypes import (
+        Hands, HandsData, HandData, HandsJointAngles, MidpointFrameBuilder
+    )
+    from data_types.CamTypes import Cam
+except ModuleNotFoundError:
+    from preprocess.data_types.HandsTypes import (
+        Hands, HandsData, HandData, HandsJointAngles, MidpointFrameBuilder
+    )
+    from preprocess.data_types.CamTypes import Cam
 from preprocess.hand_tracking.HandsTrajectoryOptimizer import HandsTrajectoryOptimizer
 
 class HaMeRHandsGenerator:
 
     def __init__(self, unit_dir, cfg, output_cfg, cam: Cam):
+        # Model backends are optional until a hand stage is actually requested.
+        # This keeps VIO, phase, and cached-hand workflows importable without
+        # installing every detector implementation.
+        try:
+            from hand_tracking.HaMeRModel import HaMeRModel
+            from hand_tracking.HandsOps import HandsOps
+            from hand_tracking.HandTrackingDiagnostics import HandTrackingDiagnostics
+        except ModuleNotFoundError:
+            from preprocess.hand_tracking.HaMeRModel import HaMeRModel
+            from preprocess.hand_tracking.HandsOps import HandsOps
+            from preprocess.hand_tracking.HandTrackingDiagnostics import HandTrackingDiagnostics
+        self._hamer_model_type = HaMeRModel
+        self._hands_ops = HandsOps
+        self._diagnostics_type = HandTrackingDiagnostics
         self.unit_dir = Path(unit_dir)
         if not self.unit_dir.is_dir():
             raise NotADirectoryError(f"Unit directory not found: {self.unit_dir}")
@@ -57,11 +72,11 @@ class HaMeRHandsGenerator:
             )
 
         if backend == "mediapipe":
-            self.detector = MediaPipeHandDetector(self.cfg.detector.mediapipe)
+            self.detector = self._load_mediapipe()(self.cfg.detector.mediapipe)
             self._detector_name = "MediaPipe"
         else:
             try:
-                self.detector = VitPoseHandDetector(
+                self.detector = self._load_vitpose()(
                     self.cfg.detector.vitpose,
                     device=device,
                 )
@@ -73,7 +88,7 @@ class HaMeRHandsGenerator:
                     f"[HaMeR] ViTPose not available ({e}), "
                     "falling back to MediaPipe detector"
                 )
-                self.detector = MediaPipeHandDetector(
+                self.detector = self._load_mediapipe()(
                     self.cfg.detector.mediapipe
                 )
                 self._detector_name = "MediaPipe"
@@ -83,36 +98,47 @@ class HaMeRHandsGenerator:
                 "hand_tracking.hamer.enabled must be true; "
                 "the current generator requires HaMeR 3D reconstruction"
             )
-        self.hamer_model = HaMeRModel(
+        self.hamer_model = self._hamer_model_type(
             device=str(self.cfg.hamer.device),
             hamer_hf_repo=str(self.cfg.hamer.hamer_hf_repo),
             mano_hf_repo=str(self.cfg.hamer.mano_hf_repo),
         )
 
         if not self.hamer_model.is_available:
-            print(
-                "[HaMeR] WARNING: HaMeR model not available. "
-                "Falling back to MediaPipe-only 3D recovery."
+            reason = self.hamer_model.initialization_error
+            raise RuntimeError(
+                "HaMeR model is unavailable; refusing to generate an all-empty "
+                "hand trajectory. Check the local model assets or network access."
+                + (f" Cause: {reason}" if reason is not None else "")
             )
 
         self.diagnostics = None
         if bool(self.cfg.diagnostics.enabled):
-            self.diagnostics = HandTrackingDiagnostics(
+            self.diagnostics = self._diagnostics_type(
                 unit_dir=self.unit_dir,
                 cfg=self.cfg.diagnostics,
                 detector_backend=self._detector_name,
                 frame_count=len(self.cam.cam),
             )
 
-        # 用于速度计算的缓存
-        self.prev_r_cache = None
-        self.prev_l_cache = None
-        self.prev_r_mid_cache = None
-        self.prev_l_mid_cache = None
-        self.prev_r_mid_R = None
-        self.prev_l_mid_R = None
         self.mid_frame_builder = MidpointFrameBuilder()
         self._score_state = {"right": None, "left": None}
+
+    @staticmethod
+    def _load_mediapipe():
+        try:
+            from hand_tracking.MediaPipeHandDetector import MediaPipeHandDetector
+        except ModuleNotFoundError:
+            from preprocess.hand_tracking.MediaPipeHandDetector import MediaPipeHandDetector
+        return MediaPipeHandDetector
+
+    @staticmethod
+    def _load_vitpose():
+        try:
+            from hand_tracking.VitPoseHandDetector import VitPoseHandDetector
+        except ModuleNotFoundError:
+            from preprocess.hand_tracking.VitPoseHandDetector import VitPoseHandDetector
+        return VitPoseHandDetector
 
     def cleanup(self) -> None:
         """释放单个视频手部处理期间持有的模型和帧缓存。"""
@@ -130,12 +156,6 @@ class HaMeRHandsGenerator:
         if hamer_model is not None:
             hamer_model.cleanup()
 
-        self.prev_r_cache = None
-        self.prev_l_cache = None
-        self.prev_r_mid_cache = None
-        self.prev_l_mid_cache = None
-        self.prev_r_mid_R = None
-        self.prev_l_mid_R = None
         self.mid_frame_builder = None
         self._score_state = {"right": None, "left": None}
         self.diagnostics = None
@@ -412,6 +432,8 @@ class HaMeRHandsGenerator:
                     img, hand['bbox'],
                     is_right=hand['is_right_int'],
                     focal_length=focal,
+                    camera_matrix=k,
+                    distortion=cam_data.d,
                 )
 
                 if hamer_result is not None:
@@ -467,6 +489,19 @@ class HaMeRHandsGenerator:
                         wrist_world,
                         rotation_world,
                     )
+                    max_speed = max(
+                        self._score_value("scoring.max_hand_speed_mps", 2.5),
+                        1e-6,
+                    )
+                    if (
+                        temporal["position_speed_mps"] is not None
+                        and temporal["position_speed_mps"] > max_speed
+                    ):
+                        if candidate_diagnostic is not None:
+                            candidate_diagnostic.rejection_reason = (
+                                "position_speed_exceeded"
+                            )
+                        continue
                     final_confidence = self._final_confidence(
                         det_confidence,
                         geometry_confidence,
@@ -548,7 +583,7 @@ class HaMeRHandsGenerator:
             frame_data = HandsData(cam_data.idx, cam_data.ts, hand_r, hand_l)
 
             # 计算速度和中点坐标系
-            self._compute_and_assign_vel(frame_data, c2w, dt)
+            self._assign_world_kinematics(frame_data, c2w)
 
             hands.hands.append(frame_data)
             hands.tss.append(cam_data.ts)
@@ -565,12 +600,19 @@ class HaMeRHandsGenerator:
                 hands,
             )
         if bool(self.cfg.postprocess.interpolation.enabled):
+            HandsTrajectoryOptimizer._discard_incomplete_hands(hands)
             self._interpolate_hand_trajectories(
                 hands,
                 max_gap=int(
                     self.cfg.postprocess.interpolation.max_gap_frames
                 ),
             )
+        max_hand_speed = self._score_value("scoring.max_hand_speed_mps", 2.5)
+        HandsTrajectoryOptimizer.remove_excessive_speed_hands(
+            hands,
+            max_hand_speed,
+            "wrist_pose_raw_world",
+        )
         if self.diagnostics is not None:
             self.diagnostics.capture_hands_stage("interpolated", hands)
         if bool(self.cfg.postprocess.short_track.enabled):
@@ -583,20 +625,32 @@ class HaMeRHandsGenerator:
         self._smooth_grasp_detection(hands, size=self.cfg.grasp.smooth_window)
         # 第三阶段：运动学优化
         if bool(self.cfg.trajectory.enabled):
-            optimizer = HandsTrajectoryOptimizer(self.cfg.trajectory, dt)
-            optimizer.run(hands)
+            optimizer = HandsTrajectoryOptimizer(self.cfg.trajectory)
+            for _ in range(3):
+                optimizer.run(hands)
+                if not HandsTrajectoryOptimizer.remove_excessive_speed_hands(
+                    hands,
+                    max_hand_speed,
+                    "wrist_pose_opt_world",
+                ):
+                    break
+                if bool(self.cfg.postprocess.short_track.enabled):
+                    self._suppress_short_hands(
+                        hands,
+                        min_frames=int(self.cfg.postprocess.short_track.min_frames),
+                    )
         self._smooth_grasp_detection(hands, size=self.cfg.grasp.smooth_window)
 
         # 第四阶段：报告
         analysis_dir = self.preprocess_dir / "vis" / "hands"
         os.makedirs(analysis_dir, exist_ok=True)
         try:
-            HandsOps.save_hands_analysis_plots_two(
+            self._hands_ops.save_hands_analysis_plots_two(
                 hands, str(analysis_dir), dt, self.cfg
             )
         except Exception as e:
             print(f"[HaMeR] Warning: analysis plots failed: {e}")
-        HandsOps.print_summary_and_eval(hands)
+        self._hands_ops.print_summary_and_eval(hands)
 
         if self.diagnostics is not None:
             self.diagnostics.save(
@@ -632,12 +686,12 @@ class HaMeRHandsGenerator:
                 raise RuntimeError(f"Missing visualization frame: {cam_d.idx}")
 
             if idx < len(hands.hands):
-                img = HandsOps.draw_aria_hands_skeleton(
+                img = self._hands_ops.draw_aria_hands_skeleton(
                     img, hands.hands[idx],
                     cam_d.k, getattr(cam_d, 'd', np.zeros(8)), cam_d.c2w,
                     grasp_threshold=self.cfg.grasp.fallback_distance_m,
                 )
-                img = HandsOps.draw_aria_hands_panel(
+                img = self._hands_ops.draw_aria_hands_panel(
                     img, idx, hands.hands[idx],
                     opt_v_limit=self.cfg.analysis.linear_velocity_limit_mps,
                 )
@@ -807,192 +861,222 @@ class HaMeRHandsGenerator:
             grasp_ratio=grasp_ratio,
             joint_angles=joint_angles,
         )
-    def _compute_and_assign_vel(self, hands_data: HandsData,
-                                c2w: np.ndarray, dt: float) -> None:
-        """计算世界坐标系中的位姿、速度和中点夹爪坐标系。"""
-        # 旋转矩阵的鲁棒化，避免神经网络预测出的旋转矩阵不是正交矩阵
-        def robust_rot(matrix):  
-            try:
-                return R.from_matrix(matrix)
-            except ValueError:
-                U, S, Vt = np.linalg.svd(matrix) # svd分解，U和Vt是正交矩阵，S是奇异值，任意矩阵M可分解为M = U @ S @ Vt
-                d = np.linalg.det(U @ Vt)#计算行列式
-                if d < 0: U[:, -1] *= -1      #若U @ Vt的行列式小于0，说明是一个反射矩阵，调整U的最后一列，使其变为正交矩阵
-                return R.from_matrix(U @ Vt)   #构造最接近的旋转矩阵
 
-        for is_right in [True, False]:
-            h_data = hands_data.hand_r if is_right else hands_data.hand_l
-            prev_cache = self.prev_r_cache if is_right else self.prev_l_cache
-            prev_mid_cache = self.prev_r_mid_cache if is_right else self.prev_l_mid_cache
-            prev_R = self.prev_r_mid_R if is_right else self.prev_l_mid_R
-
-            if h_data and h_data.wrist_pose is not None:
-                # 手腕 -> 世界
-                p_cam = h_data.wrist_pose[:3, 3]
-                r_cam = h_data.wrist_pose[:3, :3]
-                p_world = (c2w[:3, :3] @ p_cam) + c2w[:3, 3]
-                r_world = c2w[:3, :3] @ r_cam
-
-                h_data.wrist_pose_raw_world = np.eye(4)
-                h_data.wrist_pose_raw_world[:3, :3] = r_world
-                h_data.wrist_pose_raw_world[:3, 3] = p_world
-
-                if prev_cache is not None:
-                    h_data.wrist_lin_vel_raw_world = (p_world - prev_cache['pos']) / dt  #差值估算瞬时速度
-                    rel = prev_cache['rot'].T @ r_world  #上一帧到这一帧旋转姿态的相对旋转矩阵，蕴含了“需要转多少”
-                    h_data.wrist_ang_vel_raw_world = robust_rot(rel).as_rotvec() / dt  # 计算角速度 .as_rotvec()将旋转矩阵转换为旋转向量，表示旋转轴和旋转角度
-                
-                #更新速度缓存
-                cache_val = {'pos': p_world, 'rot': r_world}
-                if is_right: self.prev_r_cache = cache_val
-                else: self.prev_l_cache = cache_val
-
-                # 中点夹爪坐标系
-                if h_data.hand_keypoints_3d is not None and len(h_data.hand_keypoints_3d) >= 21:
-                    thumb_w = (c2w[:3, :3] @ h_data.hand_keypoints_3d[4]) + c2w[:3, 3] #拇指尖
-                    index_w = (c2w[:3, :3] @ h_data.hand_keypoints_3d[8]) + c2w[:3, 3] #食指尖
-                    thumb_base_w = (c2w[:3, :3] @ h_data.hand_keypoints_3d[2]) + c2w[:3, 3] #拇指根
-                    index_base_w = (c2w[:3, :3] @ h_data.hand_keypoints_3d[5]) + c2w[:3, 3] #食指根
-
-                    h_data.thumb_translation_raw_world = thumb_w
-                    h_data.index_translation_raw_world = index_w
-                    h_data.thumb_base_raw_world = thumb_base_w
-                    h_data.index_base_raw_world = index_base_w
-
-                    midpoint_w = (thumb_w + index_w) / 2.0 #取拇指尖和食指尖的中点作为中点夹爪坐标系的原点
-                    h_data.midpoint_translation_raw_world = midpoint_w
-
-                    R_mid = self.mid_frame_builder.build(
-                        thumb_w=thumb_w, index_w=index_w,
-                        thumb_base_w=thumb_base_w, index_base_w=index_base_w,
-                        wrist_w=p_world, midpoint_w=midpoint_w, prev_R=prev_R,
-                    )
-                    if R_mid is None:
-                        R_mid = prev_R if prev_R is not None else r_world.copy()
-
-                    h_data.midpoint_pose_raw_world = np.eye(4)  #将旋转矩阵和位置拼接成变换矩阵
-                    h_data.midpoint_pose_raw_world[:3, :3] = R_mid
-                    h_data.midpoint_pose_raw_world[:3, 3] = midpoint_w
-                    h_data.midpoint_orientation_raw_world = R_mid.flatten() #压平成1*9的一维数据，为了给模型输入的
-
-                    #算中点的速度
-                    if prev_mid_cache is not None: 
-                        h_data.midpoint_lin_vel_raw_world = (midpoint_w - prev_mid_cache['pos']) / dt
-                        rel = prev_mid_cache['rot'].T @ R_mid
-                        h_data.midpoint_ang_vel_raw_world = robust_rot(rel).as_rotvec() / dt
-
-                    cache_mid = {'pos': midpoint_w, 'rot': R_mid}
-                    if is_right:
-                        self.prev_r_mid_cache = cache_mid
-                        self.prev_r_mid_R = R_mid
-                    else:
-                        self.prev_l_mid_cache = cache_mid
-                        self.prev_l_mid_R = R_mid
-    # 时域清洗
-    def _filter_by_confidence(self, hands: Hands, conf_th: float = 0.3) -> None:
-        for frame_data in hands.hands:
-            for attr in ["hand_r", "hand_l"]:
-                h = getattr(frame_data, attr)
-                if h and (h.confidence < conf_th):
-                    setattr(frame_data, attr, None)
-    def _interpolate_hand_trajectories(self, hands: Hands, max_gap: int = 3) -> None:
-        from scipy.spatial.transform import Slerp
-        for attr in ["hand_r", "hand_l"]:
-            presence = [getattr(h, attr) is not None for h in hands.hands] #有效值列表 例：[True, False, True, True]
-            indices = np.where(presence)[0]   #取出有效的下标数组 例：[0,2,3]
-            if len(indices) < 2:
+    def _assign_world_kinematics(self, hands_data: HandsData, c2w: np.ndarray) -> None:
+        """Convert one observed hand from camera coordinates to world geometry."""
+        c2w = np.asarray(c2w, dtype=np.float64)
+        rotation_c2w = c2w[:3, :3]
+        translation_c2w = c2w[:3, 3]
+        for hand_attr in ("hand_r", "hand_l"):
+            hand = getattr(hands_data, hand_attr)
+            if hand is None or hand.wrist_pose is None:
                 continue
-            for start_i, end_i in zip(indices[:-1], indices[1:]): #错位滑动遍历，即[(0,2),(2,3)],0-2之间都是无效帧，可以插值
-                gap = end_i - start_i - 1 #有几帧是无效的
-                if 0 < gap <= max_gap: 
-                    h_start = getattr(hands.hands[start_i], attr)  #拿到有效的首尾手部数据
-                    h_end = getattr(hands.hands[end_i], attr)
-                    if h_start.wrist_pose is None or h_end.wrist_pose is None:
-                        continue
-                    steps = np.linspace(0, 1, gap + 2)[1:-1] #生成插值步长，去掉首尾，即将0-1之间均匀分成gap+2份，取中间的gap份，+2是因为和首尾之间还有两个空隙
-                    for j, t in enumerate(steps):
-                        fill_idx = start_i + j + 1 #要填充的无效值下标
-                        h_new = HandData(
-                            d2c=h_start.d2c, c2w=h_start.c2w,
-                            is_right=h_start.is_right,
-                            confidence=(1.0 - t) * h_start.confidence + t * h_end.confidence,
+
+            wrist_rotation = rotation_c2w @ hand.wrist_pose[:3, :3]
+            wrist_position = rotation_c2w @ hand.wrist_pose[:3, 3] + translation_c2w
+            hand.wrist_pose_raw_world = self._make_pose(wrist_rotation, wrist_position)
+
+            keypoints = np.asarray(hand.hand_keypoints_3d, dtype=np.float64)
+            if keypoints.shape != (21, 3) or not np.isfinite(keypoints).all():
+                continue
+            keypoints_world = keypoints @ rotation_c2w.T + translation_c2w
+            thumb_w, index_w = keypoints_world[4], keypoints_world[8]
+            thumb_base_w, index_base_w = keypoints_world[2], keypoints_world[5]
+            midpoint_w = 0.5 * (thumb_w + index_w)
+            midpoint_rotation = self.mid_frame_builder.build(
+                thumb_w=thumb_w,
+                index_w=index_w,
+                thumb_base_w=thumb_base_w,
+                index_base_w=index_base_w,
+                wrist_w=wrist_position,
+                midpoint_w=midpoint_w,
+            )
+            if midpoint_rotation is None:
+                continue
+
+            hand.thumb_translation_raw_world = thumb_w
+            hand.index_translation_raw_world = index_w
+            hand.thumb_base_raw_world = thumb_base_w
+            hand.index_base_raw_world = index_base_w
+            hand.midpoint_translation_raw_world = midpoint_w
+            hand.midpoint_pose_raw_world = self._make_pose(
+                midpoint_rotation,
+                midpoint_w,
+            )
+            hand.midpoint_orientation_raw_world = midpoint_rotation.flatten()
+
+    @staticmethod
+    def _make_pose(rotation: np.ndarray, translation: np.ndarray) -> np.ndarray:
+        pose = np.eye(4, dtype=np.float64)
+        pose[:3, :3] = R.from_matrix(rotation).as_matrix()
+        pose[:3, 3] = np.asarray(translation, dtype=np.float64)
+        return pose
+
+    def _filter_by_confidence(self, hands: Hands, conf_th: float = 0.3) -> None:
+        for frame in hands.hands:
+            for hand_attr in ("hand_r", "hand_l"):
+                hand = getattr(frame, hand_attr)
+                if hand is not None and hand.confidence < conf_th:
+                    setattr(frame, hand_attr, None)
+
+    def _interpolate_hand_trajectories(self, hands: Hands, max_gap: int = 6) -> None:
+        """Fill only internal short gaps using world geometry and local c2w."""
+        from scipy.spatial.transform import Slerp
+        import cv2
+
+        for hand_attr in ("hand_r", "hand_l"):
+            present = np.array(
+                [getattr(frame, hand_attr) is not None for frame in hands.hands],
+                dtype=bool,
+            )
+            valid_indices = np.flatnonzero(present)
+            for left, right in zip(valid_indices[:-1], valid_indices[1:]):
+                gap = int(right - left - 1)
+                if gap <= 0 or gap > max_gap:
+                    continue
+                start = getattr(hands.hands[left], hand_attr)
+                end = getattr(hands.hands[right], hand_attr)
+                if not (
+                    HandsTrajectoryOptimizer.has_complete_raw_geometry(start)
+                    and HandsTrajectoryOptimizer.has_complete_raw_geometry(end)
+                ):
+                    continue
+
+                start_points = self._world_points(start)
+                end_points = self._world_points(end)
+                wrist_slerp = Slerp(
+                    [0.0, 1.0],
+                    R.from_matrix(
+                        [
+                            start.wrist_pose_raw_world[:3, :3],
+                            end.wrist_pose_raw_world[:3, :3],
+                        ]
+                    ),
+                )
+                midpoint_slerp = Slerp(
+                    [0.0, 1.0],
+                    R.from_matrix(
+                        [
+                            start.midpoint_pose_raw_world[:3, :3],
+                            end.midpoint_pose_raw_world[:3, :3],
+                        ]
+                    ),
+                )
+                left_ts = float(hands.hands[left].ts)
+                right_ts = float(hands.hands[right].ts)
+                if right_ts <= left_ts:
+                    continue
+
+                for frame_index in range(left + 1, right):
+                    frame = hands.hands[frame_index]
+                    ratio = float(
+                        np.clip(
+                            (float(frame.ts) - left_ts) / (right_ts - left_ts),
+                            0.0,
+                            1.0,
                         )
-                        # 插入手腕位姿
-                        pos_interp = (1.0 - t) * h_start.wrist_pose[:3, 3] + t * h_end.wrist_pose[:3, 3] #手腕位置线性插值
-                    
-                        try:
-                            rots = R.from_matrix([h_start.wrist_pose[:3, :3], h_end.wrist_pose[:3, :3]])  #已知的两个首尾旋转矩阵转换为一个旋转对象列表
-                            slerp = Slerp([0, 1], rots) #创建一个旋转插值器
-                            rot_interp = slerp(t).as_matrix() #在t处插值，并转换回旋转矩阵
-                        except Exception:
-                            rot_interp = h_start.wrist_pose[:3, :3] #若计Slerp计算失败，则使用首帧的旋转矩阵作为插值结果
-                        
-                        T_interp = np.eye(4) #创建一个4x4的单位阵
-                        T_interp[:3, :3] = rot_interp
-                        T_interp[:3, 3] = pos_interp
-                        h_new.wrist_pose = T_interp
-                        h_new.palm_pose = T_interp
+                    )
+                    cam = self.cam.cam[frame_index]
+                    world_points = (1.0 - ratio) * start_points + ratio * end_points
+                    world_to_camera = np.linalg.inv(np.asarray(cam.c2w, dtype=np.float64))
+                    camera_points = (
+                        world_points @ world_to_camera[:3, :3].T
+                        + world_to_camera[:3, 3]
+                    )
+                    projected, _ = cv2.projectPoints(
+                        camera_points,
+                        np.zeros(3),
+                        np.zeros(3),
+                        np.asarray(cam.k, dtype=np.float64),
+                        np.asarray(cam.d if cam.d is not None else np.zeros(5), dtype=np.float64),
+                    )
+                    wrist_pose_world = self._make_pose(
+                        wrist_slerp(ratio).as_matrix(),
+                        (1.0 - ratio) * start.wrist_pose_raw_world[:3, 3]
+                        + ratio * end.wrist_pose_raw_world[:3, 3],
+                    )
+                    midpoint_position = 0.5 * (world_points[4] + world_points[8])
+                    midpoint_pose_world = self._make_pose(
+                        midpoint_slerp(ratio).as_matrix(), midpoint_position
+                    )
+                    wrist_pose_camera = world_to_camera @ wrist_pose_world
+                    hand = HandData(
+                        d2c=np.array(start.d2c, copy=True) if start.d2c is not None else None,
+                        c2w=np.array(cam.c2w, copy=True),
+                        is_right=start.is_right,
+                        confidence=(1.0 - ratio) * float(start.confidence or 0.0)
+                        + ratio * float(end.confidence or 0.0),
+                        tracking_state="interpolated",
+                        wrist_pose=wrist_pose_camera,
+                        palm_pose=wrist_pose_camera.copy(),
+                        hand_keypoints_3d=camera_points,
+                        hand_keypoints_2d=projected.reshape(21, 2),
+                        grasp_state=(1.0 - ratio) * start.grasp_score
+                        + ratio * end.grasp_score,
+                        joint_angles=HandsJointAngles.from_keypoints_3d(camera_points),
+                        wrist_pose_raw_world=wrist_pose_world,
+                        midpoint_pose_raw_world=midpoint_pose_world,
+                        midpoint_translation_raw_world=midpoint_position.copy(),
+                        midpoint_orientation_raw_world=midpoint_pose_world[:3, :3].flatten(),
+                    )
+                    hand.thumb_translation_raw_world = world_points[4].copy()
+                    hand.index_translation_raw_world = world_points[8].copy()
+                    hand.thumb_base_raw_world = world_points[2].copy()
+                    hand.index_base_raw_world = world_points[5].copy()
+                    hand.grasp_tip_distance_m = float(
+                        np.linalg.norm(camera_points[4] - camera_points[8])
+                    )
+                    hand.grasp_palm_size_m = float(
+                        np.linalg.norm(camera_points[9] - camera_points[0])
+                    )
+                    hand.grasp_ratio = (
+                        hand.grasp_tip_distance_m / hand.grasp_palm_size_m
+                        if hand.grasp_palm_size_m > 1e-12
+                        else None
+                    )
+                    setattr(frame, hand_attr, hand)
 
-                        # 21关键点直接线性插值
-                        if h_start.hand_keypoints_3d is not None and h_end.hand_keypoints_3d is not None:
-                            h_new.hand_keypoints_3d = (1.0 - t) * h_start.hand_keypoints_3d + t * h_end.hand_keypoints_3d
-                        if h_start.hand_keypoints_2d is not None and h_end.hand_keypoints_2d is not None:
-                            h_new.hand_keypoints_2d = (1.0 - t) * h_start.hand_keypoints_2d + t * h_end.hand_keypoints_2d
+    @staticmethod
+    def _world_points(hand: HandData) -> np.ndarray:
+        camera_points = np.asarray(hand.hand_keypoints_3d, dtype=np.float64)
+        c2w = np.asarray(hand.c2w, dtype=np.float64)
+        return camera_points @ c2w[:3, :3].T + c2w[:3, 3]
 
-                        if h_new.hand_keypoints_3d is not None and len(h_new.hand_keypoints_3d) >= 21:
-                            h_new.grasp_tip_distance_m = float(
-                                np.linalg.norm(h_new.hand_keypoints_3d[4] - h_new.hand_keypoints_3d[8])
-                            )
-                            h_new.grasp_palm_size_m = float(
-                                np.linalg.norm(h_new.hand_keypoints_3d[9] - h_new.hand_keypoints_3d[0])
-                            )
-                            if h_new.grasp_palm_size_m > 1e-12:
-                                h_new.grasp_ratio = (
-                                    h_new.grasp_tip_distance_m / h_new.grasp_palm_size_m
-                                )
+    def _suppress_short_hands(self, hands: Hands, min_frames: int = 6) -> None:
+        for hand_attr in ("hand_r", "hand_l"):
+            present = [getattr(frame, hand_attr) is not None for frame in hands.hands]
+            start = None
+            for index, is_present in enumerate(present + [False]):
+                if is_present and start is None:
+                    start = index
+                elif not is_present and start is not None:
+                    if index - start < min_frames:
+                        for frame_index in range(start, index):
+                            setattr(hands.hands[frame_index], hand_attr, None)
+                    start = None
 
-                        # 插值帧沿用连续抓取先验，避免漏检造成突变。
-                        h_new.grasp_score = (
-                            (1.0 - t) * h_start.grasp_score
-                            + t * h_end.grasp_score
-                        )
-                        # 把新手部数据插入这个列表对象
-                        setattr(hands.hands[fill_idx], attr, h_new)
-    def _suppress_short_hands(self, hands: Hands, min_frames: int = 5) -> None:
-            for attr in ["hand_r", "hand_l"]:
-                presence = [getattr(h, attr) is not None for h in hands.hands]
-                count, segments = 0, []
-                for i, is_present in enumerate(presence):
-                    if is_present:
-                        count += 1
-                    else:
-                        if 0 < count < min_frames:
-                            segments.append((i - count, i))
-                        count = 0
-                if 0 < count < min_frames:
-                    segments.append((len(presence) - count, len(presence)))
-                for start, end in segments: #清理所有待删除片段
-                    for i in range(start, end):
-                        setattr(hands.hands[i], attr, None)
     def _smooth_grasp_detection(self, hands: Hands, size: int = 5) -> None:
-        """抓取状态平滑"""
         from scipy.ndimage import uniform_filter1d
-        for attr in ["hand_r", "hand_l"]:
-            states = []
-            for h in hands.hands:
-                hand = getattr(h, attr)
-                states.append(hand.grasp_state if hand else 0)
-            g = np.array(states, dtype=np.float32)
-            g = uniform_filter1d(g, size=size) #一维均匀滤波，对每个位置取相邻size个数的平均值
-            # 保留连续置信度，锁定阶段由物体传播器的滞回逻辑处理。
-            for i, h in enumerate(hands.hands):
-                hand = getattr(h, attr)
-                if hand:
-                    hand.grasp_score = float(np.clip(g[i], 0.0, 1.0))
+
+        for hand_attr in ("hand_r", "hand_l"):
+            scores = np.array(
+                [
+                    getattr(frame, hand_attr).grasp_score
+                    if getattr(frame, hand_attr) is not None
+                    else 0.0
+                    for frame in hands.hands
+                ],
+                dtype=np.float32,
+            )
+            smoothed = uniform_filter1d(scores, size=size)
+            for index, frame in enumerate(hands.hands):
+                hand = getattr(frame, hand_attr)
+                if hand is not None:
+                    hand.grasp_score = float(np.clip(smoothed[index], 0.0, 1.0))
 
     @staticmethod
     def _score_from_interval(value: float, closed: float, opened: float) -> float:
-        """Map a distance-like value to grasp confidence: closed=1, open=0."""
+        """Map a distance-like value to grasp confidence."""
         if not np.isfinite(value):
             return 0.0
         if opened <= closed:

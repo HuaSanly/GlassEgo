@@ -139,6 +139,7 @@ class PhaseSegmentationGenerator:
         mode, operation_confidence, non_operation_confidence = (
             self._classify_phases(non_operation_score, operation_cfg)
         )
+        mode = self._keep_longest_operation_segment(mode)
 
         frames = tuple(
             PhaseFrame(
@@ -242,6 +243,24 @@ class PhaseSegmentationGenerator:
         operation_confidence[middle_end:] = 0.0
         non_operation_confidence[middle_end:] = 0.0
         return mode, operation_confidence, non_operation_confidence
+
+    @staticmethod
+    def _keep_longest_operation_segment(mode: np.ndarray) -> np.ndarray:
+        """Keep one operation interval and reserve its final ten frames for finish."""
+        normalized = np.full_like(mode, NON_OPERATION_MODE)
+        operation_segments = [
+            (start, end)
+            for start, end, value in PhaseSegmentationOps.find_segments(mode)
+            if value == OPERATION_MODE
+        ]
+        if not operation_segments:
+            return normalized
+
+        start, end = max(operation_segments, key=lambda segment: (segment[1] - segment[0] + 1, -segment[0]))
+        finish_start = max(start, end - FINISHED_TAIL_FRAMES + 1)
+        normalized[start:finish_start] = OPERATION_MODE
+        normalized[finish_start:end + 1] = FINISHED_MODE
+        return normalized
 
     @staticmethod
     def _kinematics(vio_frames):

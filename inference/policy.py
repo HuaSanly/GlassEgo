@@ -295,19 +295,26 @@ class ICTPolicy:
         else:
             done_prob = float(1.0 / (1.0 + np.exp(-out["done_logit"][0, 0].cpu().item())))
 
-        def sig(z):
-            return 1.0 / (1.0 + np.exp(-z))
-
         # hand sub-vector is always the FIRST base_action_dim entries (object-dynamics,
         # if present, sit after it and are ignored here).
+        # Grasp is a direct flow target in [0, 1] (the dataloader binarizes it
+        # before training), not a logit.  Applying sigmoid here maps an open
+        # target of 0 to 0.5, making the controller's ``> 0.5`` threshold
+        # sensitive to tiny flow integration errors.
         traj: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
         if self.single_hand:
-            traj[self.single_hand_side] = (a[:, 0:3], a[:, 3:9], sig(a[:, 9:10]))
+            traj[self.single_hand_side] = (
+                a[:, 0:3], a[:, 3:9], np.clip(a[:, 9:10], 0.0, 1.0)
+            )
         else:
             # dual-hand layout (grouped, NOT interleaved):
             #   [L_pos 0:3 | R_pos 3:6 | L_o6d 6:12 | R_o6d 12:18 | L_g 18 | R_g 19]
-            traj["left"] = (a[:, 0:3], a[:, 6:12], sig(a[:, 18:19]))
-            traj["right"] = (a[:, 3:6], a[:, 12:18], sig(a[:, 19:20]))
+            traj["left"] = (
+                a[:, 0:3], a[:, 6:12], np.clip(a[:, 18:19], 0.0, 1.0)
+            )
+            traj["right"] = (
+                a[:, 3:6], a[:, 12:18], np.clip(a[:, 19:20], 0.0, 1.0)
+            )
         return traj, done_prob
 
     # ================================================================

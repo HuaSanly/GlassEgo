@@ -2,7 +2,7 @@ import os
 import json
 import numpy as np
 from dataclasses import dataclass, field
-from typing import Optional, Dict, List, Any,Literal
+from typing import Optional, Dict, List, Any, Literal
 from numpy.typing import NDArray
 
 from preprocess.data_types.VIOTypes import (
@@ -27,7 +27,6 @@ class MidpointFrameBuilder:
         eps_norm: float = 1e-6,
         eps_arm: float = 1e-5,
         eps_y: float = 1e-5,
-        use_sign_consistency: bool = True
     ):
         """
         使用鲁棒性阈值初始化构建器。
@@ -35,7 +34,6 @@ class MidpointFrameBuilder:
         self.eps_norm = float(eps_norm)
         self.eps_arm = float(eps_arm)
         self.eps_y = float(eps_y)
-        self.use_sign_consistency = bool(use_sign_consistency)
 
     #标准化，即把向量归一化成单位向量，只保留了方向
     def _safe_normalize(self, v: np.ndarray) -> Optional[np.ndarray]:
@@ -64,7 +62,6 @@ class MidpointFrameBuilder:
         index_base_w: np.ndarray,   # Index MCP (index 5)
         wrist_w: np.ndarray,
         midpoint_w: np.ndarray,
-        prev_R: Optional[np.ndarray] = None
     ) -> Optional[np.ndarray]:
         """
         为拇指索引中点构造一个稳定的旋转矩阵。
@@ -74,34 +71,28 @@ class MidpointFrameBuilder:
         x_raw = index_base_w - thumb_base_w
         x = self._safe_normalize(x_raw) #x轴定义为拇指根指向食指根的方向
         if x is None:
-            return prev_R
+            return None
 
         # y 轴使用 base_midpoint 进行刚体假设
         base_midpoint_w = (thumb_base_w + index_base_w) / 2.0
         arm = base_midpoint_w - wrist_w
         if float(np.linalg.norm(arm)) < self.eps_arm:
-            return prev_R
+            return None
 
         y_raw = arm
         # 格拉姆-施密特投影
         y_proj = y_raw - float(np.dot(y_raw, x)) * x  #施密特正交化的公式，x的模是1所以不用除
         y = self._safe_normalize(y_proj)
         if y is None:
-            return prev_R
+            return None
 
         z = self._safe_normalize(np.cross(x, y)) #z轴由xy叉积得到
         if z is None:
-            return prev_R
+            return None
 
         y = self._safe_normalize(np.cross(z, x)) #再次叉积得到绝对垂直，前面计算的y可能因为浮点数的问题存在小误差
         if y is None:
-            return prev_R
-
-        # 标志一致性：防止180°翻转
-        if self.use_sign_consistency and prev_R is not None:
-            if float(np.dot(prev_R[:, 0], x)) < 0.0:  #若上帧x和这帧x的点积小于零，说明夹角大于90度，发生了翻转，需纠正回来
-                x, y = -x, -y
-                z = np.cross(x, y)
+            return None
 
         return np.column_stack([x, y, z]) #拼成旋转矩阵
 
@@ -173,6 +164,7 @@ class HandData:
     c2w: Optional[np.ndarray] = None
     is_right: bool = None
     confidence: float = None
+    tracking_state: Literal["observed", "interpolated"] = "observed"
     wrist_pose: Optional[np.ndarray] = None
     palm_pose: Optional[np.ndarray] = None
     hand_keypoints_3d: Optional[np.ndarray] = None
@@ -287,6 +279,7 @@ class Hands:
                     "d2c": self._safe_list(h.d2c),
                     "c2w": self._safe_list(h.c2w),
                     "confidence": h.confidence,
+                    "tracking_state": h.tracking_state,
                     "grasp_state": h.grasp_score,
                     "grasp_score": h.grasp_score,
                     "wrist_pose": self._safe_list(h.wrist_pose),
@@ -322,7 +315,7 @@ class Hands:
                 }
 
             json_data = {
-                "schema_version": 1,
+                "schema_version": 2,
                 "camera_frame": self.camera_frame,
                 "world_frame": self.world_frame,
                 "world_origin": self.world_origin,
@@ -357,6 +350,7 @@ class Hands:
                     "d2c": sl(h.d2c),
                     "c2w": sl(h.c2w),
                     "confidence": sl(h.confidence),
+                    "tracking_state": h.tracking_state,
                     "grasp_state": sl(h.grasp_score),
                     "grasp_score": sl(h.grasp_score),
                     "wrist_pose": sl(h.wrist_pose),
@@ -392,7 +386,7 @@ class Hands:
                 }
 
             json_data = {
-                "schema_version": 1,
+                "schema_version": 2,
                 "camera_frame": self.camera_frame,
                 "world_frame": self.world_frame,
                 "world_origin": self.world_origin,

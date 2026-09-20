@@ -1,7 +1,11 @@
 import json
 import gc
+import shutil
+import subprocess
 import sys
 import tempfile
+import traceback
+from datetime import datetime, timezone
 from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
 
@@ -12,6 +16,8 @@ from omegaconf import DictConfig, OmegaConf
 PREPROCESS_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = PREPROCESS_ROOT.parent
 DEFAULT_CONFIG_ROOT = PREPROCESS_ROOT / "config"
+UNIT_REPORT_RELATIVE_PATH = Path("preprocess") / "vis" / "pipeline" / "report.json"
+BATCH_REPORT_FILENAME = "preprocess_batch_report.json"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v"}
 POSE_FILENAMES = ("poses.json", "pose.json", "camera_poses.json")
 
@@ -56,65 +62,276 @@ class PreprocessPipeline:
     def __init__(
         self,
         config_root: str | Path = DEFAULT_CONFIG_ROOT,
+        data_root: str | Path | None = None,
     ):
-        self.cfg = self._load_preprocess_config(config_root)
+        self.config_root = Path(config_root).expanduser().resolve()
+        self.cfg = self._load_preprocess_config(self.config_root)
+        if data_root is not None:
+            self.cfg.paths.data_root = str(Path(data_root).expanduser().resolve())
         self.pending_units = self._load_pending_units()
+        self.selection_errors = []
 
-    def run(self):
-        for unit in self.pending_units:
-            vio_result = None
+    def select_units(self, keys: list[str]) -> list[ProcessUnit]:
+        """Select units in the exact order requested by a CLI or UI caller."""
+        units_by_key = {
+            f"{unit.unit_dir.parent.name}/{unit.unit_dir.name}": unit
+            for unit in self.pending_units
+        }
+        selected = []
+        self.selection_errors = []
+        for key in keys:
+            unit = units_by_key.get(key)
+            if unit is None:
+                self.selection_errors.append(
+                    {"key": key, "status": "failed", "reason": "unit not found"}
+                )
+                continue
+            selected.append(unit)
+        self.pending_units = selected
+        return selected
+
+    def run(self) -> dict:
+        """Run every pending unit in a fresh subprocess, one at a time."""
+        results = list(getattr(self, "selection_errors", []))
+        for index, unit in enumerate(self.pending_units, start=1):
+            print(
+                f"║ [Batch] Unit {index}/{len(self.pending_units)}: {unit.unit_dir}",
+                flush=True,
+            )
+            results.append(self._run_unit_subprocess(unit))
+
+        report = {
+            "status": "completed" if not any(
+                item["status"] == "failed" for item in results
+            ) else "failed",
+            "unit_count": len(self.pending_units),
+            "results": results,
+        }
+        self._atomic_write_json(
+            self._batch_report_path(),
+            report,
+        )
+        completed = sum(item["status"] == "completed" for item in results)
+        skipped = sum(item["status"] == "skipped" for item in results)
+        failed = sum(item["status"] == "failed" for item in results)
+        print(
+            f"║ [Batch] Finished: completed={completed}, skipped={skipped}, "
+            f"failed={failed}",
+            flush=True,
+        )
+        return report
+
+    def run_unit(self, unit: ProcessUnit) -> dict:
+        """Run exactly one unit inside the worker subprocess."""
+        vio_result = None
+        hands = None
+        phase_result = None
+        stage = "preflight"
+        started_at = _utc_now()
+        try:
+            preflight = self.preflight_unit(unit)
+            if preflight["status"] == "skipped":
+                print(
+                    "║ [Preflight] Skipping unit: "
+                    f"{unit.unit_dir} ({preflight['reason']})",
+                    flush=True,
+                )
+                return self._finish_unit_report(
+                    unit,
+                    status="skipped",
+                    started_at=started_at,
+                    reason=preflight["reason"],
+                    stage=stage,
+                )
+
+            stage = "vio"
+            vio_result = self.process_vio(unit)
+            stage = "hands"
+            hands = self.process_hands(unit, vio_result)
+            stage = "phases"
+            phase_result = self.process_phases(unit, vio_result, hands)
+            stage = "objects"
+            object_result = self.process_objects(unit, vio_result, phase_result, hands)
+            if object_result is not None:
+                training_frames = set(object_result.report["training_frames"])
+                context_frames = set(object_result.report["object_centric_frames"])
+                frame_indices = list(object_result.report["tracking_frames"])
+                frame_images = self._load_frame_images(
+                    unit,
+                    frame_indices,
+                    training_frames,
+                )
+                stage = "lama"
+                self.process_lama(
+                    unit,
+                    frame_images,
+                    training_frames,
+                    context_frames,
+                    float(object_result.report["fps"]),
+                )
+                stage = "visualkpts"
+                self.process_visualkpts(
+                    unit,
+                    object_result,
+                    frame_images,
+                    frame_indices,
+                    training_frames,
+                    vio_result,
+                    hands,
+                )
+                stage = "dataset"
+                self.process_dataset(
+                    unit,
+                    object_result,
+                    frame_images,
+                    training_frames,
+                    vio_result,
+                )
+            return self._finish_unit_report(
+                unit,
+                status="completed",
+                started_at=started_at,
+                stage=stage,
+            )
+        except Exception as error:
+            error_traceback = traceback.format_exc()
+            print(
+                f"║ [Unit] Failed at {stage}: {unit.unit_dir}: {error}",
+                file=sys.stderr,
+                flush=True,
+            )
+            print(error_traceback, file=sys.stderr, end="", flush=True)
+            return self._finish_unit_report(
+                unit,
+                status="failed",
+                started_at=started_at,
+                stage=stage,
+                error=error,
+                traceback_text=error_traceback,
+            )
+        finally:
             hands = None
             phase_result = None
-            try:
-                preflight = self.preflight_unit(unit)
-                if preflight["status"] == "skipped":
-                    print(
-                        "║ [Preflight] Skipping unit: "
-                        f"{unit.unit_dir} ({preflight['reason']})",
-                        flush=True,
-                    )
-                    continue
-                vio_result = self.process_vio(unit)
-                hands = self.process_hands(unit, vio_result)
-                phase_result = self.process_phases(unit, vio_result, hands)
-                object_result = self.process_objects(unit, vio_result, phase_result, hands)
-                if object_result is not None:
-                    training_frames = set(object_result.report["training_frames"])
-                    context_frames = set(object_result.report["object_centric_frames"])
-                    frame_indices = list(object_result.report["tracking_frames"])
-                    frame_images = self._load_frame_images(
-                        unit,
-                        frame_indices,
-                        training_frames,
-                    )
-                    self.process_lama(
-                        unit,
-                        frame_images,
-                        training_frames,
-                        context_frames,
-                        float(object_result.report["fps"]),
-                    )
-                    self.process_visualkpts(
-                        unit,
-                        object_result,
-                        frame_images,
-                        frame_indices,
-                        training_frames,
-                        vio_result,
-                        hands,
-                    )
-                    self.process_dataset(
-                        unit,
-                        object_result,
-                        frame_images,
-                        training_frames,
-                        vio_result,
-                    )
-            finally:
-                hands = None
-                phase_result = None
-                vio_result = None
-                self._release_unit_resources()
+            vio_result = None
+            self._release_unit_resources()
+
+    def _run_unit_subprocess(self, unit: ProcessUnit) -> dict:
+        """Run one worker and convert crashes into a failed unit result."""
+        report_path = unit.unit_dir / UNIT_REPORT_RELATIVE_PATH
+        self._atomic_write_json(
+            report_path,
+            {
+                "status": "running",
+                "unit_dir": str(unit.unit_dir),
+                "video_path": str(unit.video_path),
+                "started_at": _utc_now(),
+            },
+        )
+        command = [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--run-unit",
+            str(unit.unit_dir),
+            "--config-root",
+            str(self.config_root),
+        ]
+        configured_data_root = str(OmegaConf.select(self.cfg, "paths.data_root"))
+        command.extend(["--data-root", configured_data_root])
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(PROJECT_ROOT),
+                check=False,
+            )
+            returncode = completed.returncode
+        except Exception as error:
+            returncode = None
+            report = {
+                "status": "failed",
+                "unit_dir": str(unit.unit_dir),
+                "error_type": type(error).__name__,
+                "error": str(error),
+                "worker_exit_code": None,
+                "finished_at": _utc_now(),
+            }
+            print(
+                f"║ [Batch] Could not start worker for {unit.unit_dir}: {error}",
+                file=sys.stderr,
+                flush=True,
+            )
+            self._atomic_write_json(report_path, report)
+            return report
+
+        report = self._read_json(report_path)
+        if returncode != 0 or report.get("status") not in {"completed", "skipped"}:
+            report.update(
+                {
+                    "status": "failed",
+                    "worker_exit_code": returncode,
+                    "worker_signal": -returncode if returncode is not None and returncode < 0 else None,
+                    "finished_at": _utc_now(),
+                }
+            )
+            if "error" not in report:
+                report["error"] = "worker exited before producing a successful result"
+            print(
+                f"║ [Batch] Worker failed for {unit.unit_dir} "
+                f"(exit={returncode})",
+                file=sys.stderr,
+                flush=True,
+            )
+            self._atomic_write_json(report_path, report)
+        else:
+            report["worker_exit_code"] = returncode
+            self._atomic_write_json(report_path, report)
+        return report
+
+    def _finish_unit_report(
+        self,
+        unit: ProcessUnit,
+        *,
+        status: str,
+        started_at: str,
+        reason: str | None = None,
+        stage: str | None = None,
+        error: Exception | None = None,
+        traceback_text: str | None = None,
+    ) -> dict:
+        report = {
+            "status": status,
+            "unit_dir": str(unit.unit_dir),
+            "video_path": str(unit.video_path),
+            "started_at": started_at,
+            "finished_at": _utc_now(),
+            "stage": stage,
+            "reason": reason,
+        }
+        if error is not None:
+            report.update(
+                {
+                    "error_type": type(error).__name__,
+                    "error": str(error),
+                }
+            )
+        if traceback_text is not None:
+            report["traceback"] = traceback_text
+        self._atomic_write_json(unit.unit_dir / UNIT_REPORT_RELATIVE_PATH, report)
+        return report
+
+    def _batch_report_path(self) -> Path:
+        data_root = Path(str(self.cfg.paths.data_root)).expanduser()
+        if not data_root.is_absolute():
+            data_root = PROJECT_ROOT / data_root
+        return data_root / BATCH_REPORT_FILENAME
+
+    @staticmethod
+    def _read_json(path: Path) -> dict:
+        try:
+            with path.open("r", encoding="utf-8") as stream:
+                document = json.load(stream)
+            return document if isinstance(document, dict) else {}
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
 
     def preflight_unit(self, unit: ProcessUnit) -> dict:
         """Decode enough frames to reject undersized units before VIO starts."""
@@ -198,7 +415,30 @@ class PreprocessPipeline:
 
         timestamps = [frame.timestamp_ns for frame in vio_result.trajectory.frames]
         cache_filename = str(self.cfg.output.json_filename)
-        if bool(getattr(self.cfg.hand_tracking, "reuse_existing", False)):
+        reuse_existing = bool(getattr(self.cfg.hand_tracking, "reuse_existing", False))
+        if not self.cfg.hand_tracking.enabled:
+            hand_input = OmegaConf.select(
+                self.cfg,
+                "phase_segmentation.hand_input",
+                default={},
+            ) or {}
+            if not reuse_existing and not bool(hand_input.get("use_cached", False)):
+                return None
+            from hand_tracking.HandCacheLoader import load_cached_hands
+
+            filename = (
+                cache_filename
+                if reuse_existing
+                else str(hand_input.get("filename", "hamer_hands.json"))
+            )
+            try:
+                return load_cached_hands(unit.unit_dir, timestamps, filename=filename)
+            except (FileNotFoundError, ValueError) as error:
+                raise ValueError(
+                    f"Hand tracking is disabled and its cache is unavailable or stale: {error}"
+                ) from error
+
+        if reuse_existing:
             from hand_tracking.HandCacheLoader import load_cached_hands
 
             try:
@@ -220,27 +460,7 @@ class PreprocessPipeline:
                     flush=True,
                 )
 
-        if not self.cfg.hand_tracking.enabled:
-            hand_input = OmegaConf.select(
-                self.cfg,
-                "phase_segmentation.hand_input",
-                default={},
-            ) or {}
-            if not bool(hand_input.get("use_cached", False)):
-                return None
-            from hand_tracking.HandCacheLoader import load_cached_hands
-
-            try:
-                return load_cached_hands(
-                    unit.unit_dir,
-                    timestamps,
-                    filename=str(hand_input.get("filename", "hamer_hands.json")),
-                )
-            except FileNotFoundError:
-                if bool(hand_input.get("required", False)):
-                    raise
-                return None
-
+        self._clear_hand_cache(unit.unit_dir, cache_filename)
         from hand_tracking.HaMeRHandsGenerator import HaMeRHandsGenerator
 
         cam = None
@@ -271,6 +491,30 @@ class PreprocessPipeline:
             elif cam is not None:
                 cam.cam.clear()
                 cam.tss.clear()
+
+    def _clear_hand_cache(self, unit_dir: Path, filename: str) -> None:
+        """Invalidate only this hand method's artifacts before fresh inference."""
+        video_filename = str(
+            getattr(self.cfg.output, "video_filename", "hamer_hands_vis.mp4")
+        )
+        for name in (filename, video_filename):
+            if Path(name).name != name or name in ("", ".", ".."):
+                raise ValueError(f"Hand output filename must be a single path segment: {name}")
+        preprocess_dir = unit_dir / "preprocess"
+        for root in ("temp_data", "all_data"):
+            for frame_dir in (preprocess_dir / root).glob("*"):
+                path = frame_dir / filename
+                if frame_dir.name.isdigit() and path.is_file():
+                    path.unlink()
+        analysis_dir = preprocess_dir / "vis" / "hands"
+        if analysis_dir.is_dir():
+            shutil.rmtree(analysis_dir)
+        video_path = preprocess_dir / "vis" / video_filename
+        video_path.unlink(missing_ok=True)
+        video_path.with_suffix(".gif").unlink(missing_ok=True)
+        (preprocess_dir / "vis" / "hamer_hands_diagnostics.mp4").unlink(
+            missing_ok=True
+        )
 
     @staticmethod
     def _release_unit_resources() -> None:
@@ -617,6 +861,69 @@ class PreprocessPipeline:
         OmegaConf.resolve(cfg)
         return cfg
 
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_args():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run GlassEgo preprocessing")
+    parser.add_argument(
+        "--units",
+        nargs="*",
+        default=[],
+        help="task/unit keys; omit to process all discovered units",
+    )
+    parser.add_argument(
+        "--run-unit",
+        type=Path,
+        help="internal worker mode: process exactly one unit directory",
+    )
+    parser.add_argument(
+        "--config-root",
+        type=Path,
+        default=DEFAULT_CONFIG_ROOT,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--data-root",
+        type=Path,
+        default=None,
+        help="External data root containing <task>/<unit> directories",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = _parse_args()
+    pipeline = PreprocessPipeline(
+        config_root=args.config_root,
+        data_root=args.data_root,
+    )
+    if args.run_unit is not None:
+        unit_dir = args.run_unit.expanduser().resolve()
+        units = [unit for unit in pipeline.pending_units if unit.unit_dir == unit_dir]
+        if len(units) != 1:
+            print(f"Unable to find exactly one unit: {unit_dir}", file=sys.stderr)
+            return 1
+        result = pipeline.run_unit(units[0])
+        return 0 if result["status"] in {"completed", "skipped"} else 1
+
+    if args.units:
+        pipeline.select_units(args.units)
+        print(
+            f"[preprocess] selected {len(pipeline.pending_units)}/"
+            f"{len(args.units)} unit(s)",
+            flush=True,
+        )
+    if not pipeline.pending_units and not pipeline.selection_errors:
+        print("[preprocess] no units to process", flush=True)
+        return 1
+    report = pipeline.run()
+    return 0 if report["status"] == "completed" else 1
+
+
 if __name__ == "__main__":
-    processor = PreprocessPipeline()
-    processor.run()
+    sys.exit(main())

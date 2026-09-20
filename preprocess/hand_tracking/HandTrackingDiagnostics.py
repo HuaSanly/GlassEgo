@@ -6,11 +6,18 @@ import numpy as np
 from omegaconf import OmegaConf
 from tqdm import tqdm
 
-from data_types.HandDiagnosticTypes import (
-    HandCandidateDiagnostic,
-    HandDiagnosticsResult,
-    HandFrameDiagnostic,
-)
+try:
+    from data_types.HandDiagnosticTypes import (
+        HandCandidateDiagnostic,
+        HandDiagnosticsResult,
+        HandFrameDiagnostic,
+    )
+except ModuleNotFoundError:
+    from preprocess.data_types.HandDiagnosticTypes import (
+        HandCandidateDiagnostic,
+        HandDiagnosticsResult,
+        HandFrameDiagnostic,
+    )
 
 
 STAGE_NAMES = (

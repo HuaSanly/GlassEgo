@@ -10,11 +10,24 @@ data/
 tem_data/
 models/
 runs/
+# Keep formal tests versioned; ignore only local test caches and generated data.
+tests/__pycache__/
 tests/
+tools/
+environment/
+
 
 # Python bytecode and caches
 __pycache__/
 *.py[cod]
+
+# Model and media assets must stay outside Git.
+*.ckpt
+*.mp4
+*.onnx
+*.pt
+*.pth
+*.safetensors
 
 # Rokid Glass3 calibration outputs
 datacollection/rokidglass3/calibration/board/*

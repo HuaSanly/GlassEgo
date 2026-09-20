@@ -24,7 +24,7 @@ from preprocess.vio.VIOPoseProcessor import VIOPoseProcessor
 class BasaltVIOGenerator:
     """协调单个数据单元的 Basalt VIO 处理。"""
 
-    CACHE_VERSION = 2
+    CACHE_VERSION = 3
 
     def __init__(self, unit_dir: str | Path, cfg):
         self.unit_dir = Path(unit_dir).expanduser().resolve()
@@ -46,17 +46,19 @@ class BasaltVIOGenerator:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         raw_sensor_data = self.loader.load_sensor_data()
         calibration = self.loader.load_calibration()
-        executable_identity = self.adapter.executable_identity()
-        fingerprint = self._build_fingerprint(executable_identity)
+        cache_fingerprint = self._build_fingerprint(None)
 
         if bool(self.cfg.reuse_existing) and not force:
             cached = self._load_cached_result(
-                fingerprint,
+                cache_fingerprint,
                 calibration,
                 len(raw_sensor_data.camera),
             )
             if cached is not None:
                 return cached
+
+        executable_identity = self.adapter.executable_identity()
+        fingerprint = self._build_fingerprint(executable_identity)
 
         try:
             sensor_data = SensorSynchronizer().synchronize(
@@ -95,6 +97,7 @@ class BasaltVIOGenerator:
                 )
                 report = self._build_report(
                     fingerprint,
+                    cache_fingerprint,
                     executable_identity,
                     sensor_data,
                     trajectory,
@@ -114,6 +117,7 @@ class BasaltVIOGenerator:
                     "status": "failed",
                     "unit_dir": str(self.unit_dir),
                     "input_fingerprint": fingerprint,
+                    "cache_fingerprint": cache_fingerprint,
                     "pose_schema_version": VIO_POSE_SCHEMA_VERSION,
                     "world_frame": ARIA_MPS_WORLD_FRAME,
                     "world_origin": ARIA_MPS_WORLD_ORIGIN,
@@ -135,7 +139,7 @@ class BasaltVIOGenerator:
 
     def _load_cached_result(
         self,
-        fingerprint: str,
+        cache_fingerprint: str,
         calibration,
         expected_frames: int,
     ) -> VIOResult | None:
@@ -154,7 +158,7 @@ class BasaltVIOGenerator:
                 report = json.load(stream)
             if report.get("status") not in ("completed", "completed_with_warnings"):
                 return None
-            if report.get("input_fingerprint") != fingerprint:
+            if report.get("cache_fingerprint") != cache_fingerprint:
                 return None
             if self.trajectory_path.stat().st_size == 0:
                 return None
@@ -175,7 +179,7 @@ class BasaltVIOGenerator:
             log_path=self.log_path,
         )
 
-    def _build_fingerprint(self, executable_identity: dict) -> str:
+    def _build_fingerprint(self, executable_identity: dict | None) -> str:
         digest = hashlib.sha256()
         digest.update(f"glassego-vio-cache-{self.CACHE_VERSION}".encode("utf-8"))
         digest.update(ARIA_MPS_WORLD_FRAME.encode("utf-8"))
@@ -198,18 +202,20 @@ class BasaltVIOGenerator:
                 separators=(",", ":"),
             ).encode("utf-8")
         )
-        digest.update(
-            json.dumps(
-                executable_identity,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        )
+        if executable_identity is not None:
+            digest.update(
+                json.dumps(
+                    executable_identity,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
         return digest.hexdigest()
 
     def _build_report(
         self,
         fingerprint,
+        cache_fingerprint,
         executable_identity,
         sensor_data,
         trajectory,
@@ -220,6 +226,7 @@ class BasaltVIOGenerator:
             "unit_dir": str(self.unit_dir),
             "video_path": str(self.loader.paths.video_path),
             "input_fingerprint": fingerprint,
+            "cache_fingerprint": cache_fingerprint,
             "cache_reused": False,
             "pose_schema_version": VIO_POSE_SCHEMA_VERSION,
             "world_frame": ARIA_MPS_WORLD_FRAME,

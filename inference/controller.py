@@ -54,6 +54,13 @@ class TrajectoryController:
         """Forget smoothing history (call when re-anchoring / after a manual move)."""
         self._last_cmd = {s: None for s in self.arms}
 
+    def initialize_from_state(self) -> None:
+        """Start smoothing from the measured EE pose of every arm."""
+        self._last_cmd = {
+            side: arm.get_T_ee_in_cam().copy()
+            for side, arm in self.arms.items()
+        }
+
     # ----------------------------------------------------------------
     def _smooth(self, side: str, T_target: np.ndarray) -> np.ndarray:
         """EMA position + Slerp rotation + per-step clamp, relative to last command."""
@@ -74,6 +81,29 @@ class TrajectoryController:
         self._last_cmd[side] = out
         return out
 
+    def _gripper_command(self, side: str, grasp: float) -> bool:
+        return grasp > self.grasp_threshold
+
+    def _wait(self, dt: float) -> None:
+        time.sleep(dt)
+
+    def _command_step(self, side: str, target: np.ndarray, grasp: float, dt: float) -> dict:
+        arm = self.arms[side]
+        target = self._smooth(side, target)
+        ok = arm.move_ee_in_cam(target, duration=dt, blocking=False)
+        if not ok:
+            self._last_cmd[side] = arm.get_T_ee_in_cam()
+        closed = self._gripper_command(side, grasp)
+        arm.set_gripper(float(closed))
+        return {
+            "side": side,
+            "target": target.copy(),
+            "ik_ok": bool(ok),
+            "grasp_probability": grasp,
+            "predicted_gripper_closed": grasp > self.grasp_threshold,
+            "gripper_closed": closed,
+        }
+
     # ----------------------------------------------------------------
     def execute_chunk(
         self,
@@ -81,25 +111,29 @@ class TrajectoryController:
         grasp_per_arm: Dict[str, np.ndarray],        # {side: grasp_prob (H,)}
         dt: float,
         n_steps: int,
-    ) -> None:
+    ) -> list[dict]:
         """Execute the first `n_steps` of the predicted trajectory (receding horizon).
 
         Only a few of the H predicted steps are run before the loop re-plans on a
         fresh observation — this is what keeps the policy reactive (closed-loop).
         """
+        execution = []
         for k in range(n_steps):
-            for side, arm in self.arms.items():
+            started = time.perf_counter()
+            step_execution = []
+            for side in self.arms:
                 if side not in traj_per_arm or k >= len(traj_per_arm[side]):
                     continue  # this arm isn't driven by the policy this episode
-                T_cmd = self._smooth(side, traj_per_arm[side][k])
-                ok = arm.move_ee_in_cam(T_cmd, duration=dt, blocking=False)
-                if not ok:
-                    # IK / reachability failure: skip this step rather than fight it.
-                    # (Production code optionally nudges the EE up in Z to escape singularities.)
-                    self._last_cmd[side] = arm.get_T_ee_in_cam()
-                grasp = float(grasp_per_arm[side][k])
-                arm.set_gripper(1.0 if grasp > self.grasp_threshold else 0.0)
-            time.sleep(dt)
+                grasp = float(np.asarray(grasp_per_arm[side][k]).reshape(-1)[0])
+                item = self._command_step(side, traj_per_arm[side][k], grasp, dt)
+                item["index"] = k + 1
+                step_execution.append(item)
+            self._wait(dt)
+            for item in step_execution:
+                item["achieved"] = self.arms[item["side"]].get_T_ee_in_cam().copy()
+                item["elapsed_ms"] = (time.perf_counter() - started) * 1000.0
+            execution.extend(step_execution)
+        return execution
 
     # ----------------------------------------------------------------
     def home(self) -> None:

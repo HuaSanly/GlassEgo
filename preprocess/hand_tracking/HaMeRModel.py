@@ -20,6 +20,7 @@ import gc
 
 import numpy as np
 import torch
+import cv2
 
 from typing import Optional, Tuple
 
@@ -48,6 +49,7 @@ class HaMeRModel:
         self.mano_hf_repo = str(mano_hf_repo)
         self.model = None
         self.cfg = None
+        self.initialization_error = None
 
         try:
             assets = self._download_hamer_assets()
@@ -59,6 +61,7 @@ class HaMeRModel:
             print(f"[HaMeR] Model loaded on {self.device}")
 
         except Exception as e:
+            self.initialization_error = e
             print(f"[HaMeR] WARNING: Failed to load HaMeR model: {e}")
             self.model = None
 
@@ -121,6 +124,8 @@ class HaMeRModel:
         bbox: np.ndarray,
         is_right: int = 1,
         focal_length: float = 500.0,
+        camera_matrix: Optional[np.ndarray] = None,
+        distortion: Optional[np.ndarray] = None,
     ) -> Optional[dict]:
         """
         对手部图像裁剪运行 HaMeR 推理。
@@ -197,12 +202,20 @@ class HaMeRModel:
             # pred_cam_t_full 给出相机翻译 [tx, ty, tz]
             joints_cam = pred_keypoints_3d + pred_cam_t_full[np.newaxis, :]
 
-            # 使用透视投影投影 3D -> 2D
+            # Project in the original image coordinate system with the calibrated camera.
             joints_2d = np.zeros((21, 2), dtype=np.float32)
             if np.all(joints_cam[:, 2] > 0):
-                fl = float(scaled_focal_length.cpu()) if isinstance(scaled_focal_length, torch.Tensor) else float(scaled_focal_length)
-                joints_2d[:, 0] = joints_cam[:, 0] / joints_cam[:, 2] * fl + img_w / 2.0
-                joints_2d[:, 1] = joints_cam[:, 1] / joints_cam[:, 2] * fl + img_h / 2.0
+                k = np.asarray(camera_matrix, dtype=np.float64) if camera_matrix is not None else np.array(
+                    [[float(scaled_focal_length), 0.0, img_w / 2.0],
+                     [0.0, float(scaled_focal_length), img_h / 2.0],
+                     [0.0, 0.0, 1.0]], dtype=np.float64
+                )
+                d = np.asarray(distortion if distortion is not None else np.zeros(8), dtype=np.float64)
+                projected, _ = cv2.projectPoints(
+                    joints_cam.astype(np.float64),
+                    np.zeros(3), np.zeros(3), k, d,
+                )
+                joints_2d = projected.reshape(-1, 2).astype(np.float32)
 
             return {
                 'joints_3d': joints_cam.astype(np.float32),

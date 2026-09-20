@@ -43,8 +43,8 @@ GlassEgo is an egocentric vision pipeline for AR glasses (Rokid Glass3) that pro
 ### Environment Setup
 ```bash
 # Create and activate conda environment
-conda create -n glassego python=3.11 -y
-conda activate glassego
+conda create -n GlassEgo python=3.11 -y
+conda activate GlassEgo
 
 # Full installation (excludes hardware and hand tracking by default)
 bash setup.sh

@@ -126,6 +126,160 @@ fresh observation — this **receding horizon** keeps the policy reactive.
 
 ## How to run
 
+### MuJoCo simulation
+
+`run_inference_sim.py` wires the existing policy and trajectory controller to
+the Block Jamming MuJoCo scene. `interface_sim.py` provides an RGB-D Ego camera,
+damped-least-squares site IK, gripper control, and deterministic Oracle
+perception. This keeps the first simulation bring-up independent of DINO/SAM or
+LaMa while preserving the `Frame`, `ObjectState`, ICT, and clean-image
+contracts.
+
+The model input camera is `ego_rgbd`, attached to `Head03_Link`, 50 mm above
+and 15 mm in front of the middle eye, pitched down 55 degrees (vertical FOV
+60 degrees). Head position servos hold the neutral pose against gravity.
+The viewer's free camera and `task_overview` do not feed the model. The policy
+still receives this head camera's clean image with robot meshes hidden and
+virtual gripper/object overlays, resized to the checkpoint's image size.
+Camera intrinsics use square pixels (`fx = fy`); object anchors and robot-base
+extrinsics are evaluated in the current head-camera frame each observation.
+
+```bash
+conda run -n GlassEgo python inference/run_inference_sim.py --device cpu
+```
+
+For a repeatable scene layout, the BRX XML contains a tray at `(0.64, 0.02,
+0.555)` and a red block at `(0.64, -0.165, 0.565)` (meters). Both can be
+overridden without editing the XML:
+
+```bash
+conda run -n GlassEgo python inference/run_inference_sim.py --device cpu \
+  --block-position 0.64 -0.165 0.565 \
+  --target-position 0.64 0.02 0.555
+```
+
+The simulation entrypoint prints per-cycle inputs, policy output, each executed
+substep, IK status, scene state, and stage timings by default. Use `--quiet` to
+keep only the termination summary and final JSON result.
+Pass `--seed N` together with the position overrides to make the policy noise
+and the episode repeatable.
+
+Both modes share `TrajectoryController.execute_chunk` with the real-world
+template: predict a trajectory, execute its first 8 commands at 10 Hz, then
+capture a fresh observation and replan. Position/rotation smoothing, the
+grasp threshold, failed-IK handling and first-command behavior are identical.
+The simulation sends the nonblocking arm and gripper targets before advancing
+one control interval, including when IK fails; it no longer moves first and
+then adds separate gripper settling time. Nonblocking motion uses MuJoCo joint
+position servos, so this matches command ordering rather than a particular
+hardware SDK's internal Cartesian interpolation. Both modes use the same IK
+settings during policy control and feed back the measured gripper value.
+
+`--policy-only` disables all geometry gating and takeover. It stops after a
+chunk when the model's done probability exceeds 0.8, or when the simulation
+episode budget (`--max-steps`, default 100 inference cycles) is exhausted.
+IK failures and geometric success are recorded but do not stop policy control.
+The final `success` is measured from the physical scene, independently of the
+model's done prediction. Perception still uses MuJoCo object ground truth;
+the hardware template's approximate object-latching heuristic is not used.
+
+The default hybrid mode retains the same policy loop. It only suppresses close
+commands when the current finger midpoint is more than 45 mm from the current
+block center; it never cancels the motion chunk based on a future close target.
+The model gets at least 8 complete inference/execution cycles before takeover.
+After that, the geometry supervisor takes over on 5 consecutive all-IK-failed
+cycles, 5 consecutive gated-close cycles accompanied by 5 cycles without
+progress, 12 cycles without progress, or a model done signal without placement.
+Continuing improvement delays takeover, up to a 40-cycle policy budget (or the
+episode limit if it is reached after the minimum 8 cycles). Progress means at
+least 5 mm improvement in approach distance, lift up to 50 mm, or tray alignment
+after lifting; merely pushing the block toward the tray is not placement
+progress. Geometry then uses its own IK settings and attempts a physical
+grasp/place from the current scene, without resetting the block. Takeover opens
+the jaws and approaches directly without a joint-space home move across the
+table. The grasp orientation is derived from the finger pad geometry rather
+than a fixed correction to the policy's final wrist pose.
+
+JSON results separate `policy_execution_steps` (attempted action commands),
+`policy_ik_failures`, `policy_max_lift` (sampled after each chunk),
+`policy_final_scene`, `gated_close_count`, `fallback_trigger`, and
+`geometry_fallback` diagnostics. A fallback success is not a policy-only success.
+
+### Inspect predictions independently of robot execution
+
+```bash
+conda run -n GlassEgo python inference/run_inference_sim.py --viewer --seed 7 \
+  --preview-prediction
+```
+
+After opening/homing the arms, this mode freezes physics, runs the model once,
+and displays its **complete decoded EE trajectory** in MuJoCo world coordinates.
+It bypasses smoothing, step limits, IK, gripper commands, and geometry takeover.
+The window stays open until closed or interrupted; the moving marker repeats
+the same prediction at `control_hz`, without advancing the robot or requesting
+new predictions. This is a visualization of one predicted horizon, not a
+closed-loop task rollout or the flow-matching ODE integration process.
+Preview takes precedence over `--loop`, `--max-steps`, and the model done signal.
+
+Cyan points/lines indicate predicted open grasps; orange indicates closure
+above the configured grasp threshold. Bright points are the first `exec_horizon`
+commands (normally 8); the remaining prediction is translucent. Sparse red,
+green, and blue arrows show the decoded robot EE's local X/Y/Z axes, after
+`T_align` conversion. The animated marker is labeled with its zero-based index
+and predicted closure probability. Rotate/zoom the viewer to inspect depth.
+
+Use `--show-prediction` during normal policy or hybrid execution to replace the
+overlay after each inference while the robot continues moving. Each overlay
+is frozen using that observation's camera pose, so head movement does not move
+the already predicted world targets. All markers are display-only geometry;
+they have no collisions and are absent from model RGB-D input.
+
+For offscreen inspection, save a world-pose/probability JSON and observer PNG:
+
+```bash
+conda run -n GlassEgo python inference/run_inference_sim.py --headless --seed 7 \
+  --preview-prediction --prediction-output runs/prediction-visualization/seed7.json
+```
+
+`--prediction-output` also works with normal execution, overwriting the latest
+prediction and PNG each cycle. The JSON records the checkpoint, observation
+camera transform, full world poses and grasp probabilities. Preview reports
+zero policy commands; its scene `success` field is not a grasp evaluation.
+
+On a desktop with `DISPLAY`, the inference entrypoint opens the MuJoCo viewer
+automatically; pass `--headless` to force EGL/offscreen execution. On machines
+without `DISPLAY`, headless mode is selected automatically. The simulation
+adapter selects the NVIDIA GLX vendor automatically when `libGLX_nvidia` is
+available. A desktop launch can therefore use the same command without
+manually exporting `__GLX_VENDOR_LIBRARY_NAME`:
+
+```bash
+DISPLAY=:0 python inference/run_inference_sim.py --device cpu --seed 7
+```
+
+Without `--max-steps`, the command keeps starting new episodes until the viewer
+is closed or `Ctrl-C` is pressed. Use `--once` for one episode, or use
+`--max-steps N` for a bounded diagnostic run. `--loop --max-steps N` explicitly
+enables repeated bounded episodes. The model and viewer stay open across
+episodes; the scene and controller state reset each time. Viewer motion plays
+at real time with continuous refresh, including geometry fallback. The final
+pose stays visible for 2 seconds before reset; `--loop-delay SECONDS` changes
+that interval. Headless execution remains unpaced. `--result-json` is updated
+after each episode with its latest metrics.
+
+If a wrapper hides the host GLX libraries, export
+`__GLX_VENDOR_LIBRARY_NAME=nvidia` before launching instead.
+
+Hybrid takeover reasons are printed with the number of policy cycles and action
+commands already attempted. Policy-only runs continue replanning after failed
+IK commands, just like the real-world template.
+
+Defaults live in [`sim_config.yaml`](sim_config.yaml). `ego_rgbd` is the policy
+camera; `task_overview` remains a viewer/debug camera. MuJoCo camera coordinates
+are converted to the OpenCV optical convention with `(x, -y, -z)`. The configured
+`T_align` applies the BRX TCP-to-training-hand axis bridge; keep it consistent
+with the checkpoint's hand-frame convention when changing the robot model.
+
 **Prerequisites**
 
 1. A trained checkpoint with `config.json` **and** `dataset_stats.json` next to it

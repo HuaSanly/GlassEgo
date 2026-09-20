@@ -51,7 +51,10 @@ from scipy.spatial.transform import Rotation as R
 from scipy.ndimage import uniform_filter1d
 
 from utils.utils_vis import draw_glass_rect
-from data_types.HandsTypes import HandsData, Hands
+try:
+    from data_types.HandsTypes import HandsData, Hands
+except ModuleNotFoundError:
+    from preprocess.data_types.HandsTypes import HandsData, Hands
 
 
 # ---------------------------------------------------------------------------

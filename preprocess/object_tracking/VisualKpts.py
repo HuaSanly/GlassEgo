@@ -17,6 +17,10 @@ from utils.utils_media import create_video_from_frames
 class VisualKptsGenerator:
     """Project world-space hand geometry and tracked object points to RGB."""
 
+    _OBJECT_CLUSTER_SCALE = 3.0
+    _OBJECT_CLUSTER_MIN_RADIUS_PX = 8.0
+    _TRACK_RANSAC_THRESHOLD_PX = 8.0
+    _TRACK_RANSAC_MIN_POINTS = 4
     _HAND_SIDES = ("hand_l", "hand_r")
     _HAND_OPEN_COLORS = (
         "color_hand_1_line",
@@ -73,6 +77,7 @@ class VisualKptsGenerator:
         self._tracks_document = tracks_document or {}
         self._tracks_by_frame = self._index_tracks(self._tracks_document)
         self._visibility_by_frame = self._index_visibility(self._tracks_document)
+        self._filter_object_track_outliers()
 
         vio_by_idx = {
             int(frame.frame_idx): frame for frame in vio_result.trajectory.frames
@@ -206,18 +211,16 @@ class VisualKptsGenerator:
             )
 
         colors = self._object_colors()
-        object_index = 0
-        for object_key in sorted(object_tracks):
+        object_points = self._tracked_object_points(frame_idx, object_tracks)
+        object_keys = sorted(object_points)
+
+        for object_index, object_key in enumerate(object_keys):
             if not self._is_object_key(object_key):
                 continue
-            points = object_tracks[object_key]
-            if isinstance(points, Mapping):
-                points = points.get("tracks", [])
-            points = np.asarray(points, dtype=np.float64)
+            points = np.asarray(object_points.get(object_key, []), dtype=np.float64)
             if points.ndim != 2 or points.shape[1] < 2:
                 continue
             color = colors[object_index % len(colors)]
-            object_index += 1
             for point in points:
                 if not np.all(np.isfinite(point[:2])):
                     continue
@@ -229,6 +232,136 @@ class VisualKptsGenerator:
                     self._value("radius_current", 4) + 1,
                 )
         return canvas
+
+    def _tracked_object_points(self, frame_idx, object_tracks):
+        tracked = {}
+        for object_key, points in object_tracks.items():
+            if not self._is_object_key(object_key):
+                continue
+            if isinstance(points, Mapping):
+                points = points.get("tracks", [])
+            points = np.asarray(points, dtype=np.float64)
+            if points.ndim != 2 or points.shape[1] < 2:
+                continue
+            point_mask = self._object_render_mask(frame_idx, object_key, points)
+            points = points[point_mask]
+            tracked[object_key] = self._largest_object_cluster(points)
+        return tracked
+
+    def _object_render_mask(self, frame_idx, object_key, points):
+        point_mask = np.isfinite(points[:, :2]).all(axis=1)
+        render_validity = self._render_validity_by_frame.get(int(frame_idx), {}).get(
+            object_key
+        )
+        if render_validity is not None and len(render_validity) == len(points):
+            point_mask &= render_validity
+        visibility = np.asarray(
+            self._visibility_by_frame.get(int(frame_idx), {}).get(object_key, []),
+            dtype=np.float64,
+        )
+        if len(visibility) == len(points):
+            point_mask &= visibility > 0
+        valid_indices = np.flatnonzero(point_mask)
+        if len(valid_indices) < 3:
+            return point_mask
+        cluster_mask = self._largest_object_cluster_mask(points[valid_indices, :2])
+        point_mask[valid_indices] = cluster_mask
+        return point_mask
+
+    def _filter_object_track_outliers(self) -> None:
+        self._render_validity_by_frame = {
+            int(frame_idx): {}
+            for frame_idx in self._tracks_document.get("frames", [])
+        }
+        for object_key, data in self._tracks_document.get("objects", {}).items():
+            if not self._is_object_key(object_key) or not isinstance(data, Mapping):
+                continue
+            tracks = np.asarray(data.get("tracks", []), dtype=np.float64)
+            visibility = np.asarray(data.get("visibility", []), dtype=np.float64)
+            if (
+                tracks.ndim != 3
+                or tracks.shape[2] < 2
+                or visibility.shape != tracks.shape[:2]
+            ):
+                continue
+
+            finite = np.isfinite(tracks[:, :, :2]).all(axis=2)
+            base_valid = (visibility > 0) & finite
+            render_valid = base_valid.copy()
+            for frame_position in range(1, len(tracks)):
+                common = np.flatnonzero(
+                    base_valid[frame_position - 1] & base_valid[frame_position]
+                )
+                if len(common) < self._TRACK_RANSAC_MIN_POINTS:
+                    continue
+
+                previous_points = tracks[frame_position - 1, common, :2]
+                current_points = tracks[frame_position, common, :2]
+                _, inliers = cv2.estimateAffine2D(
+                    previous_points,
+                    current_points,
+                    method=cv2.RANSAC,
+                    ransacReprojThreshold=self._TRACK_RANSAC_THRESHOLD_PX,
+                    maxIters=500,
+                    confidence=0.99,
+                    refineIters=10,
+                )
+                if inliers is None:
+                    continue
+                render_valid[frame_position, common[inliers.ravel() == 0]] = False
+
+            frame_indices = [int(frame_idx) for frame_idx in self._tracks_document["frames"]]
+            for frame_position, frame_idx in enumerate(frame_indices):
+                if frame_position >= len(render_valid):
+                    break
+                self._render_validity_by_frame.setdefault(frame_idx, {})[
+                    object_key
+                ] = render_valid[frame_position]
+
+    @classmethod
+    def _largest_object_cluster(cls, points: np.ndarray) -> np.ndarray:
+        return points[cls._largest_object_cluster_mask(points)]
+
+    @classmethod
+    def _largest_object_cluster_mask(cls, points: np.ndarray) -> np.ndarray:
+        if len(points) < 3:
+            return np.ones(len(points), dtype=bool)
+
+        distances = np.linalg.norm(points[:, None] - points[None, :], axis=2)
+        np.fill_diagonal(distances, np.inf)
+        nearest_distances = distances.min(axis=1)
+        finite_nearest = nearest_distances[np.isfinite(nearest_distances)]
+        if len(finite_nearest) == 0:
+            return np.ones(len(points), dtype=bool)
+
+        radius = max(
+            cls._OBJECT_CLUSTER_MIN_RADIUS_PX,
+            float(np.median(finite_nearest)) * cls._OBJECT_CLUSTER_SCALE,
+        )
+        adjacency = distances <= radius
+        remaining = set(range(len(points)))
+        clusters = []
+        while remaining:
+            pending = [remaining.pop()]
+            cluster = []
+            while pending:
+                point_index = pending.pop()
+                cluster.append(point_index)
+                neighbors = {
+                    int(index)
+                    for index in np.flatnonzero(adjacency[point_index])
+                    if int(index) in remaining
+                }
+                remaining.difference_update(neighbors)
+                pending.extend(neighbors)
+            clusters.append(cluster)
+
+        largest = max(clusters, key=len)
+        if len(largest) <= len(points) / 2:
+            return np.ones(len(points), dtype=bool)
+        mask = np.zeros(len(points), dtype=bool)
+        mask[np.asarray(sorted(largest), dtype=np.int64)] = True
+        return mask
 
     def _draw_gripper(
         self,
@@ -477,7 +610,6 @@ class VisualKptsGenerator:
         current_objects = self._tracks_by_frame.get(current_idx, {})
         next_objects = self._tracks_by_frame.get(next_idx, {})
         start_objects = self._tracks_by_frame.get(start_idx, {})
-        current_visibility = self._visibility_by_frame.get(current_idx, {})
         trail_color = self._color("color_object_trail", (200, 150, 0))
         intensity = 0.2 + 0.8 * time_ratio
         trail_color = tuple(int(channel * intensity) for channel in trail_color)
@@ -497,7 +629,11 @@ class VisualKptsGenerator:
                 or start_points.shape[1] < 2
             ):
                 continue
-            visible = np.asarray(current_visibility.get(object_key, []), dtype=np.float64)
+            current_valid = self._object_render_mask(
+                current_idx, object_key, current_points
+            )
+            next_valid = self._object_render_mask(next_idx, object_key, next_points)
+            start_valid = self._object_render_mask(start_idx, object_key, start_points)
             point_count = min(len(current_points), len(next_points), len(start_points))
             for point_index in range(point_count):
                 current_point = current_points[point_index, :2]
@@ -511,7 +647,11 @@ class VisualKptsGenerator:
                     continue
                 if np.linalg.norm(current_point - start_point) <= threshold:
                     continue
-                if point_index < len(visible) and visible[point_index] <= 0:
+                if not (
+                    current_valid[point_index]
+                    and next_valid[point_index]
+                    and start_valid[point_index]
+                ):
                     continue
                 cv2.line(
                     canvas,

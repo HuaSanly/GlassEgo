@@ -1,0 +1,306 @@
+<mujoco model="glassego block jamming brx">
+  <compiler angle="radian" autolimits="true" />
+  <asset>
+    <mesh name="base_link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/base_link.STL" />
+    <mesh name="FoldingModularJoint01_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/FoldingModularJoint01_Link.STL" />
+    <mesh name="FoldingModularJoint02_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/FoldingModularJoint02_Link.STL" />
+    <mesh name="FoldingModularJoint03_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/FoldingModularJoint03_Link.STL" />
+    <mesh name="Trunk_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/Trunk_Link.STL" />
+    <mesh name="ArmR01_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/ArmR01_Link.STL" />
+    <mesh name="ArmR02_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/ArmR02_Link.STL" />
+    <mesh name="ArmR03_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/ArmR03_Link.STL" />
+    <mesh name="ArmR04_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/ArmR04_Link.STL" />
+    <mesh name="ArmR05_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/ArmR05_Link.STL" />
+    <mesh name="ArmR06_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/ArmR06_Link.STL" />
+    <mesh name="ArmR07_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/ArmR07_Link.STL" />
+    <mesh name="ArmR08_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/ArmR08_Link.STL" />
+    <mesh name="LinearclampinggripperJZ01_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/LinearclampinggripperJZ01_Link.STL" />
+    <mesh name="JawBlock01_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/JawBlock01_Link.STL" />
+    <mesh name="JawBlock02_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/JawBlock02_Link.STL" />
+    <mesh name="ArmRcamera_link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/ArmRcamera_link.STL" />
+    <mesh name="ArmL01_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/ArmL01_Link.STL" />
+    <mesh name="ArmL02_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/ArmL02_Link.STL" />
+    <mesh name="ArmL03_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/ArmL03_Link.STL" />
+    <mesh name="ArmL04_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/ArmL04_Link.STL" />
+    <mesh name="ArmL05_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/ArmL05_Link.STL" />
+    <mesh name="ArmL06_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/ArmL06_Link.STL" />
+    <mesh name="ArmL07_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/ArmL07_Link.STL" />
+    <mesh name="ArmL08_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/ArmL08_Link.STL" />
+    <mesh name="LinearclampinggripperJZ02_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/LinearclampinggripperJZ02_Link.STL" />
+    <mesh name="JawBlock03_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/JawBlock03_Link.STL" />
+    <mesh name="JawBlock04_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/JawBlock04_Link.STL" />
+    <mesh name="ArmLcamera_link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/ArmLcamera_link.STL" />
+    <mesh name="Head01_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/Head01_Link.STL" />
+    <mesh name="Head02_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/Head02_Link.STL" />
+    <mesh name="Head03_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/Head03_Link.STL" />
+    <mesh name="EYER_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/EYER_Link.STL" />
+    <mesh name="EYEM_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/EYEM_Link.STL" />
+    <mesh name="EYEL_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/EYEL_Link.STL" />
+    <mesh name="WheelR_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/WheelR_Link.STL" />
+    <mesh name="WheelL_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/WheelL_Link.STL" />
+    <mesh name="FRWheel01_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/FRWheel01_Link.STL" />
+    <mesh name="FRWheel02_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/FRWheel02_Link.STL" />
+    <mesh name="FLWheel01_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/FLWheel01_Link.STL" />
+    <mesh name="FLWheel02_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/FLWheel02_Link.STL" />
+    <mesh name="BRWheel01_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/BRWheel01_Link.STL" />
+    <mesh name="BRWheel02_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/BRWheel02_Link.STL" />
+    <mesh name="BLWheel01_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/BLWheel01_Link.STL" />
+    <mesh name="BLWheel02_Link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/BLWheel02_Link.STL" />
+    <mesh name="F_rgb_link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/F_rgb_link.STL" />
+    <mesh name="B_rgb_link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/B_rgb_link.STL" />
+    <mesh name="lidar_link" content_type="model/stl" file="/home/huasan/BRX20260825/meshes/lidar_link.STL" />
+    <texture type="skybox" name="skybox" builtin="gradient" rgb1="0.82 0.86 0.9" rgb2="0.5 0.56 0.62" width="512" height="3072" />
+    <texture type="2d" name="work_grid" builtin="checker" mark="edge" rgb1="0.94 0.94 0.91" rgb2="0.88 0.89 0.86" markrgb="0.55 0.57 0.56" width="600" height="600" />
+    <material name="work_surface" texture="work_grid" texrepeat="12 11" texuniform="true" reflectance="0.02" />
+    <material name="table_edge" rgba="0.72 0.74 0.72 1" />
+    <material name="container_blue" rgba="0.18 0.54 0.82 0.72" reflectance="0.04" />
+    <material name="block_red" rgba="0.86 0.03 0.02 1" reflectance="0.03" />
+  </asset>
+  <worldbody>
+    <geom type="mesh" rgba="1 1 1 1" mesh="base_link" group="2" contype="0" conaffinity="0" />
+    <geom pos="0.20656 0.051063 0.06" quat="0.707105 -0.707108 0 0" type="mesh" rgba="1 1 1 1" mesh="FoldingModularJoint01_Link" group="2" contype="0" conaffinity="0" />
+    <geom pos="0.31656 -0.00043688 -0.0725" quat="0.499998 -0.5 0.500002 -0.5" type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="F_rgb_link" group="2" contype="0" conaffinity="0" />
+    <geom pos="-0.28194 -0.00043688 -0.0725" quat="0.499998 -0.5 -0.500002 0.5" type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="B_rgb_link" group="2" contype="0" conaffinity="0" />
+    <geom pos="0.28256 -0.00043688 -0.265" quat="-3.67321e-06 1 0 0" type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="lidar_link" group="2" contype="0" conaffinity="0" />
+    <body name="FoldingModularJoint02_Link" pos="0.20656 0.051063 0.06" quat="0.707105 -0.707108 0 0">
+      <inertial pos="-9.61292e-05 -0.150281 -0.0410096" quat="0.499914 0.499909 -0.500091 0.500086" mass="1.47799" diaginertia="0.0218309 0.0199134 0.00216808" />
+      <joint name="FoldingModularJoint02_Joint" range="-1.31 2.1" axis="0 0 -1" />
+      <geom type="mesh" rgba="1 1 1 1" mesh="FoldingModularJoint02_Link" group="2" contype="0" conaffinity="0" />
+      <body name="FoldingModularJoint03_Link" pos="0 -0.3 0">
+        <inertial pos="-1.50392e-05 -0.150452 -0.0428938" quat="0.499995 0.500005 -0.499995 0.500005" mass="0.718222" diaginertia="0.00787437 0.00682348 0.00115274" />
+        <joint name="FoldingModularJoint03_Joint" range="-1.1338 1.74" axis="0 0 -1" />
+        <geom type="mesh" rgba="1 1 1 1" mesh="FoldingModularJoint03_Link" group="2" contype="0" conaffinity="0" />
+        <body name="Trunk_Link" pos="0 -0.3 0">
+          <inertial pos="-0.00571434 -0.163804 -0.0577769" quat="0.996622 -0.0813255 0.00112821 -0.0113984" mass="2.30485" diaginertia="0.018981 0.0114062 0.00945705" />
+          <joint name="Trunk_Joint" range="-0.785 2.1" axis="0 0 -1" />
+          <geom type="mesh" rgba="1 1 1 1" mesh="Trunk_Link" group="2" contype="0" conaffinity="0" />
+          <geom pos="-0.003158 -0.10495 -0.059" quat="0.0150458 0 0 0.999887" type="mesh" rgba="1 1 1 1" mesh="ArmR01_Link" group="2" contype="0" conaffinity="0" />
+          <geom pos="-0.003158 -0.10495 -0.059" quat="0.0150458 0 0 0.999887" type="mesh" rgba="1 1 1 1" mesh="ArmL01_Link" group="2" contype="0" conaffinity="0" />
+          <geom pos="-0.003158 -0.10495 -0.059" quat="0.0150458 0 0 0.999887" type="mesh" rgba="1 1 1 1" mesh="Head01_Link" group="2" contype="0" conaffinity="0" />
+          <body name="ArmR02_Link" pos="-0.00794412 -0.263948 -0.20641" quat="0.258661 0.965929 0.00224563 -0.00838592">
+            <inertial pos="0.00245192 0.000137995 0.0641546" quat="0.666405 -0.190434 -0.192605 0.694653" mass="0.168495" diaginertia="9.72011e-05 8.99126e-05 7.9572e-05" />
+            <joint name="ArmR02_Joint" range="-1.57 1.57" />
+            <geom type="mesh" rgba="1 1 1 1" mesh="ArmR02_Link" group="2" contype="0" conaffinity="0" />
+            <body name="ArmR03_Link" pos="0.027358 0.00095055 0.07195" quat="0.184484 -0.68894 0.181347 -0.677083">
+              <inertial pos="0.0510794 0.0737982 -0.0302095" quat="0.641863 0.665129 -0.264482 -0.275073" mass="0.289456" diaginertia="0.000691802 0.000612613 0.000302902" />
+              <joint name="ArmR03_Joint" range="-1.57 0.52" />
+              <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="ArmR03_Link" group="2" contype="0" conaffinity="0" />
+              <body name="ArmR04_Link" pos="0.088475 0.15415 -0.027751" quat="0.679512 0.685498 -0.207645 -0.15887">
+                <inertial pos="0.00296536 4.94523e-05 -0.0799269" quat="0.714387 -0.0451413 -0.054137 0.696192" mass="0.235451" diaginertia="0.000173296 0.000155429 0.000107662" />
+                <joint name="ArmR04_Joint" range="-1.57 1.57" axis="0 0 -1" />
+                <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="ArmR04_Link" group="2" contype="0" conaffinity="0" />
+                <body name="ArmR05_Link" pos="0.028526 -0.0015341 -0.093703" quat="0.497187 0.502795 0.497191 0.502795">
+                  <inertial pos="0.0618801 -0.0121495 -0.0315246" quat="0.159052 0.753138 -0.128351 0.625309" mass="0.156562" diaginertia="0.000114852 9.69996e-05 7.41014e-05" />
+                  <joint name="ArmR05_Joint" range="-0.53 1.57" axis="0 0 -1" />
+                  <geom type="mesh" rgba="1 1 1 1" mesh="ArmR05_Link" group="2" contype="0" conaffinity="0" />
+                  <body name="ArmR06_Link" pos="0.093931 0.003362 -0.019779" quat="0.0387444 0.706043 -0.0387458 0.706046">
+                    <inertial pos="-0.00525754 0.0151096 0.0567951" quat="0.999891 -0.0109149 0.00499844 -0.00862877" mass="0.145359" diaginertia="0.000115408 0.000101528 7.50968e-05" />
+                    <joint name="ArmR06_Joint" range="-2.1 2.1" axis="0 0 -1" />
+                    <geom type="mesh" rgba="1 1 1 1" mesh="ArmR06_Link" group="2" contype="0" conaffinity="0" />
+                    <body name="ArmR07_Link" pos="0.0081746 0.0060123 0.13005" quat="0.00395588 -0.707096 0.00396108 -0.707096">
+                      <inertial pos="-0.00601109 0.00334536 -0.0219999" quat="0.532189 0.531961 0.465645 0.465798" mass="0.0654201" diaginertia="2.82862e-05 2.19506e-05 1.8831e-05" />
+                      <joint name="ArmR07_Joint" range="-0.52 0.52" axis="0 0 -1" />
+                      <geom type="mesh" rgba="1 1 1 1" mesh="ArmR07_Link" group="2" contype="0" conaffinity="0" />
+                      <body name="ArmR08_Link" pos="0.00015117 0.0224 -0.022" quat="0.7066 -0.706858 -0.0188202 -0.0267449">
+                        <inertial pos="0.0648161 0.00418374 0.0454662" quat="0.979102 0.00756982 -0.200579 0.0327086" mass="0.205674" diaginertia="0.000540362 0.000405594 0.00018758" />
+                        <joint name="ArmR08_Joint" range="-1 1" axis="0 0 -1" />
+                        <geom type="mesh" rgba="1 1 1 1" mesh="ArmR08_Link" group="2" contype="0" conaffinity="0" />
+                        <geom pos="0.081248 0.0052438 -0.0088" quat="0.999746 0 0 0.0225296" type="mesh" rgba="1 1 1 1" mesh="LinearclampinggripperJZ01_Link" group="2" contype="0" conaffinity="0" />
+                        <geom pos="0.0658546 0.00425029 0.0805873" quat="0.965424 -0.00833914 0.258685 0.0311221" type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="ArmRcamera_link" group="2" contype="0" conaffinity="0" />
+                        <body name="JawBlock01_Link" pos="0.118151 -0.0334631 -0.0088" quat="0.7066 0.706858 0.0188203 0.0267448">
+                          <inertial pos="0.0170883 -0.000676992 0.00806214" quat="-0.00156765 0.740127 0.00124642 0.672464" mass="0.0281627" diaginertia="1.19978e-05 1.00626e-05 3.24011e-06" />
+                          <joint name="JawBlock01_Joint" type="slide" range="0 0.041" axis="0 0 -1" />
+                          <geom type="mesh" rgba="1 1 1 1" mesh="JawBlock01_Link" group="2" contype="0" conaffinity="0" />
+                          <geom name="JawBlock01_Link_collision" type="box" pos="0.035 0 0.009" size="0.045 0.014 0.009" group="3" rgba="0 0 0 0" contype="1" conaffinity="1" condim="4" friction="1.8 0.02 0.001" />
+                        </body>
+                        <body name="JawBlock02_Link" pos="0.112869 0.048373 -0.0088" quat="0.7066 0.706858 0.0188203 0.0267448">
+                          <inertial pos="0.0170992 0.000296402 -0.00806214" quat="0.00954528 0.672405 -0.00910771 0.740066" mass="0.0281627" diaginertia="1.19978e-05 1.00626e-05 3.24011e-06" />
+                          <joint name="JawBlock02_Joint" type="slide" range="-0.041 0" axis="0 0 -1" />
+                          <geom type="mesh" rgba="1 1 1 1" mesh="JawBlock02_Link" group="2" contype="0" conaffinity="0" />
+                          <geom name="JawBlock02_Link_collision" type="box" pos="0.035 0 0.009" size="0.045 0.014 0.009" group="3" rgba="0 0 0 0" contype="1" conaffinity="1" condim="4" friction="1.8 0.02 0.001" />
+                        </body>
+                        <site name="right_ee_site" pos="0.151 0.0007 -0.0084" size="0.006" rgba="1 0.3 0.1 0.7" />
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+          <body name="ArmL02_Link" pos="-0.00794412 -0.263948 0.08841" quat="0.965923 0.258684 -0.00838587 0.00224582">
+            <inertial pos="-0.00245559 3.25126e-05 0.0641546" quat="0.690123 0.197007 0.185876 0.671095" mass="0.168495" diaginertia="9.72011e-05 8.99126e-05 7.9572e-05" />
+            <joint name="ArmL02_Joint" range="-1.57 1.2" />
+            <geom type="mesh" rgba="1 1 1 1" mesh="ArmL02_Link" group="2" contype="0" conaffinity="0" />
+            <body name="ArmL03_Link" pos="-0.027358 0.00095055 0.07195" quat="0.194831 0.686085 0.171137 0.679735">
+              <inertial pos="0.0510794 -0.0728563 0.0324153" quat="0.651793 0.6554 0.268589 0.271064" mass="0.289456" diaginertia="0.000691802 0.000612613 0.000302902" />
+              <joint name="ArmL03_Joint" range="-0.52 1.57" />
+              <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="ArmL03_Link" group="2" contype="0" conaffinity="0" />
+              <body name="ArmL04_Link" pos="0.08725 -0.14947 0.027018" quat="0.734248 0.626518 0.198884 0.169707">
+                <inertial pos="0.00171738 -0.00624317 0.0837375" quat="0.69087 0.101554 -0.00374948 0.715802" mass="0.235451" diaginertia="0.000173296 0.000155429 0.000107662" />
+                <joint name="ArmL04_Joint" range="-1.57 1.57" />
+                <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="ArmL04_Link" group="2" contype="0" conaffinity="0" />
+                <body name="ArmL05_Link" pos="0.027067 -0.0082337 0.096687" quat="0.442914 0.551203 0.442918 0.551203">
+                  <inertial pos="0.0608217 0.00684109 -0.0305649" quat="-0.117046 0.756921 0.0924299 0.63626" mass="0.142902" diaginertia="0.000110917 9.15174e-05 6.7829e-05" />
+                  <joint name="ArmL05_Joint" range="-1.57 0.53" axis="0 0 -1" />
+                  <geom type="mesh" rgba="1 1 1 1" mesh="ArmL05_Link" group="2" contype="0" conaffinity="0" />
+                  <body name="ArmL06_Link" pos="0.092101 -0.011949 -0.019766" quat="0.209129 0.690072 0.154278 0.675473">
+                    <inertial pos="0.00333483 -0.0162891 0.0557463" quat="0.961853 0.0106082 0.00595486 0.273295" mass="0.150515" diaginertia="0.000117975 0.000103196 7.7033e-05" />
+                    <joint name="ArmL06_Joint" range="-2.1 2.1" axis="0 0 -1" />
+                    <geom type="mesh" rgba="1 1 1 1" mesh="ArmL06_Link" group="2" contype="0" conaffinity="0" />
+                    <body name="ArmL07_Link" pos="-0.027534 -0.023602 0.1299" quat="0.690071 0.209132 -0.675473 0.154278">
+                      <inertial pos="-0.00629167 0.00278198 -0.0219999" quat="0.510324 0.510103 0.489492 0.489655" mass="0.0654202" diaginertia="2.82862e-05 2.19506e-05 1.8831e-05" />
+                      <joint name="ArmL07_Joint" range="-0.52 0.52" />
+                      <geom type="mesh" rgba="1 1 1 1" mesh="ArmL07_Link" group="2" contype="0" conaffinity="0" />
+                      <body name="ArmL08_Link" pos="-0.0018967 0.02232 -0.022" quat="0.706795 -0.702838 -0.077593 -0.0209596">
+                        <inertial pos="0.0643192 0.00903826 0.0454661" quat="0.977182 0.0150994 -0.200152 0.0694664" mass="0.205674" diaginertia="0.00054036 0.000405592 0.000187581" />
+                        <joint name="ArmL08_Joint" range="-1 1" axis="0 0 -1" />
+                        <geom type="mesh" rgba="1 1 1 1" mesh="ArmL08_Link" group="2" contype="0" conaffinity="0" />
+                        <geom pos="0.080625 0.011329 -0.0088" quat="1 0 0 0" type="mesh" rgba="1 1 1 1" mesh="LinearclampinggripperJZ02_Link" group="2" contype="0" conaffinity="0" />
+                        <geom pos="0.06535 0.0091826 0.080587" quat="0.963574 -0.0180509 0.258189 0.0673669" type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="ArmLcamera_link" group="2" contype="0" conaffinity="0" />
+                        <body name="JawBlock03_Link" pos="0.12033 -0.024498 -0.0088" quat="0.706795 0.702838 0.077593 0.0209593">
+                          <inertial pos="0.0170786 0.000887615 0.00806214" quat="-0.0323279 0.739295 0.0351025 0.671689" mass="0.0281627" diaginertia="1.19978e-05 1.00626e-05 3.24011e-06" />
+                          <joint name="JawBlock03_Joint" type="slide" range="0 0.041" axis="0 0 -1" />
+                          <geom type="mesh" rgba="1 1 1 1" mesh="JawBlock03_Link" group="2" contype="0" conaffinity="0" />
+                          <geom name="JawBlock03_Link_collision" type="box" pos="0.035 0 0.009" size="0.045 0.014 0.009" group="3" rgba="0 0 0 0" contype="1" conaffinity="1" condim="4" friction="1.8 0.02 0.001" />
+                        </body>
+                        <body name="JawBlock04_Link" pos="0.108919 0.056711 -0.0088" quat="0.706795 0.702838 0.077593 0.0209593">
+                          <inertial pos="0.0170008 0.00185518 -0.00806214" quat="-0.024319 0.672118 0.0216607 0.739728" mass="0.0281627" diaginertia="1.19978e-05 1.00626e-05 3.24011e-06" />
+                          <joint name="JawBlock04_Joint" type="slide" range="-0.041 0" axis="0 0 -1" />
+                          <geom type="mesh" rgba="1 1 1 1" mesh="JawBlock04_Link" group="2" contype="0" conaffinity="0" />
+                          <geom name="JawBlock04_Link_collision" type="box" pos="0.035 0 0.009" size="0.045 0.014 0.009" group="3" rgba="0 0 0 0" contype="1" conaffinity="1" condim="4" friction="1.8 0.02 0.001" />
+                        </body>
+                        <site name="left_ee_site" pos="0.151 -0.0007 -0.0084" size="0.006" rgba="0.1 0.5 1 0.7" />
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+          <body name="Head02_Link" pos="0.00302385 -0.315031 -0.059" quat="0.707105 0.707108 0 0">
+            <inertial pos="-0.000790814 -0.00180222 0.0272361" quat="0.70466 -0.0160047 -0.00475903 0.709348" mass="0.016046" diaginertia="3.76458e-06 3.75443e-06 2.26008e-06" />
+            <joint name="Head02_Joint" range="-1.23 1.57" axis="0 0 -1" />
+            <geom type="mesh" rgba="1 1 1 1" mesh="Head02_Link" group="2" contype="0" conaffinity="0" />
+            <body name="Head03_Link" pos="-0.0010558 -0.018798 0.045099" quat="0.0056556 -0.00565279 0.706909 -0.70726">
+              <inertial pos="-0.00863945 -0.0771806 -0.0187109" quat="0.995566 -0.00282077 -0.000665059 0.0940243" mass="0.15537" diaginertia="0.000315022 0.000207334 0.000192546" />
+              <joint name="Head03_Joint" range="-1 1" axis="0 0 -1" />
+              <geom type="mesh" rgba="1 1 1 1" mesh="Head03_Link" group="2" contype="0" conaffinity="0" />
+              <geom pos="-0.057512 -0.084789 0.0113" quat="0.00565704 0.00566221 -0.707085 0.707083" type="mesh" rgba="1 0.172549 0.105882 1" mesh="EYER_Link" group="2" contype="0" conaffinity="0" />
+              <geom pos="-0.057512 -0.084789 -0.0187" quat="0.00565704 0.00566221 -0.707085 0.707083" type="mesh" rgba="1 0.172549 0.105882 1" mesh="EYEM_Link" group="2" contype="0" conaffinity="0" />
+              <geom pos="-0.057512 -0.084789 -0.0487" quat="0.00565704 0.00566221 -0.707085 0.707083" type="mesh" rgba="1 0.172549 0.105882 1" mesh="EYEL_Link" group="2" contype="0" conaffinity="0" />
+              <camera name="ego_rgbd" pos="-0.072512 -0.134789 -0.0187" xyaxes="0 0 1 -0.8191520443 -0.5735764364 0" fovy="60" />
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+    <body name="WheelR_Link" pos="0.009563 -0.24014 -0.3765" quat="0.707105 0.707108 0 0">
+      <inertial pos="0 0 0.019" quat="0.5 0.5 -0.5 0.5" mass="0.348409" diaginertia="0.000823757 0.000451944 0.000451944" />
+      <joint name="WheelR_Joint" />
+      <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="WheelR_Link" group="2" contype="0" conaffinity="0" />
+    </body>
+    <body name="WheelL_Link" pos="0.009563 0.23926 -0.3765" quat="0.707105 0.707108 0 0">
+      <inertial pos="0 0 -0.019" quat="0.5 0.5 -0.5 0.5" mass="0.348409" diaginertia="0.000823757 0.000451944 0.000451944" />
+      <joint name="WheelL_Joint" />
+      <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="WheelL_Link" group="2" contype="0" conaffinity="0" />
+    </body>
+    <body name="FRWheel01_Link" pos="0.24843 -0.19814 -0.325">
+      <inertial pos="4.97357e-11 -2.3235e-09 -0.0253988" quat="0.707107 0.707107 -5.06329e-06 -5.06329e-06" mass="0.207068" diaginertia="0.000187848 0.000180731 0.000151239" />
+      <joint name="FRWheel01_Joint" axis="0 0 -1" />
+      <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="FRWheel01_Link" group="2" contype="0" conaffinity="0" />
+      <body name="FRWheel02_Link" pos="0 0 -0.075" quat="0.707105 -0.707108 0 0">
+        <inertial pos="0 0 0" quat="0.5 0.5 -0.5 0.5" mass="0.168653" diaginertia="0.000131224 8.62758e-05 8.62758e-05" />
+        <joint name="FRWheel02_Joint" axis="0 0 -1" />
+        <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="FRWheel02_Link" group="2" contype="0" conaffinity="0" />
+      </body>
+    </body>
+    <body name="FLWheel01_Link" pos="0.24843 0.19726 -0.325">
+      <inertial pos="-4.98542e-11 2.32354e-09 -0.0253988" quat="0.707107 0.707107 -5.06329e-06 -5.06329e-06" mass="0.207068" diaginertia="0.000187848 0.000180731 0.000151239" />
+      <joint name="FLWheel01_Joint" axis="0 0 -1" />
+      <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="FLWheel01_Link" group="2" contype="0" conaffinity="0" />
+      <body name="FLWheel02_Link" pos="0 0 -0.075" quat="0.707105 -0.707108 0 0">
+        <inertial pos="0 0 0" quat="0.5 0.5 -0.5 0.5" mass="0.168653" diaginertia="0.000131224 8.62758e-05 8.62758e-05" />
+        <joint name="FLWheel02_Joint" />
+        <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="FLWheel02_Link" group="2" contype="0" conaffinity="0" />
+      </body>
+    </body>
+    <body name="BRWheel01_Link" pos="-0.26157 -0.19814 -0.325">
+      <inertial pos="-4.98144e-11 2.32352e-09 -0.0253988" quat="0.707107 0.707107 -5.06329e-06 -5.06329e-06" mass="0.207068" diaginertia="0.000187848 0.000180731 0.000151239" />
+      <joint name="BRWheel01_Joint" axis="0 0 -1" />
+      <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="BRWheel01_Link" group="2" contype="0" conaffinity="0" />
+      <body name="BRWheel02_Link" pos="0 0 -0.075" quat="0.707105 -0.707108 0 0">
+        <inertial pos="0 0 0" quat="0.5 0.5 -0.5 0.5" mass="0.168653" diaginertia="0.000131224 8.62758e-05 8.62758e-05" />
+        <joint name="BRWheel02_Joint" axis="0 0 -1" />
+        <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="BRWheel02_Link" group="2" contype="0" conaffinity="0" />
+      </body>
+    </body>
+    <body name="BLWheel01_Link" pos="-0.26157 0.19726 -0.325">
+      <inertial pos="4.97581e-11 -2.32351e-09 -0.0253988" quat="0.707107 0.707107 -5.06329e-06 -5.06329e-06" mass="0.207068" diaginertia="0.000187848 0.000180731 0.000151239" />
+      <joint name="BLWheel01_Joint" axis="0 0 -1" />
+      <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="BLWheel01_Link" group="2" contype="0" conaffinity="0" />
+      <body name="BLWheel02_Link" pos="0 0 -0.075" quat="0.707105 -0.707108 0 0">
+        <inertial pos="0 0 0" quat="0.5 0.5 -0.5 0.5" mass="0.168653" diaginertia="0.000131224 8.62758e-05 8.62758e-05" />
+        <joint name="BLWheel02_Joint" axis="0 0 -1" />
+        <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="BLWheel02_Link" group="2" contype="0" conaffinity="0" />
+      </body>
+    </body>
+    <geom name="floor" type="plane" size="3 3 0.05" pos="0 0 -0.44" rgba="0.42 0.45 0.47 1" friction="1 0.01 0.001" />
+    <geom name="task_table" type="box" size="0.62 0.56 0.025" pos="0.86 0 0.525" material="work_surface" friction="1.2 0.02 0.001" />
+    <geom name="task_table_edge" type="box" size="0.625 0.565 0.012" pos="0.86 0 0.488" material="table_edge" />
+    <camera name="task_overview" pos="1.45 -1.25 1.25" xyaxes="0.68 0.73 0 -0.45 0.42 0.79" fovy="48" />
+    <light name="key_light" pos="0.65 -0.35 1.8" dir="0.15 0.15 -1" diffuse="0.8 0.78 0.72" directional="false" />
+    <light name="fill_light" pos="0.2 0.8 1.2" dir="0.45 -0.35 -0.8" diffuse="0.35 0.42 0.5" directional="false" />
+    <body name="target_container" pos="0.64 0.02 0.555">
+      <geom name="target_container_bounds" type="box" size="0.105 0.08 0.04" pos="0 0 0.034" rgba="0 0 0 0" contype="0" conaffinity="0" />
+      <geom name="target_container_floor" type="box" size="0.075 0.055 0.004" pos="0 0 0" material="container_blue" friction="1.2 0.02 0.001" />
+      <geom name="target_wall_left" type="box" size="0.004 0.067500 0.038079" pos="-0.090000 0 0.035000" euler="0 -0.40489179 0" material="container_blue" />
+      <geom name="target_wall_right" type="box" size="0.004 0.067500 0.038079" pos="0.090000 0 0.035000" euler="0 0.40489179 0" material="container_blue" />
+      <geom name="target_wall_front" type="box" size="0.090000 0.004 0.037165" pos="0 -0.067500 0.035000" euler="0.34302394 0 0" material="container_blue" />
+      <geom name="target_wall_back" type="box" size="0.090000 0.004 0.037165" pos="0 0.067500 0.035000" euler="-0.34302394 0 0" material="container_blue" />
+      <site name="target_site" pos="0 0 0.04" size="0.008" rgba="0 0 0 0" />
+    </body>
+    <body name="block" pos="0.64 -0.165 0.565">
+      <freejoint name="block_freejoint" />
+      <geom name="block_geom" type="box" size="0.015 0.015 0.015" mass="0.02" material="block_red" condim="4" friction="1.8 0.03 0.001" solref="0.01 1" />
+      <site name="block_grasp_site" size="0.006" rgba="1 1 1 0.5" />
+    </body>
+  </worldbody>
+  <option timestep="0.002" integrator="implicitfast" gravity="0 0 -9.81" />
+  <visual>
+    <headlight diffuse="0.62 0.62 0.62" ambient="0.32 0.32 0.32" specular="0.08 0.08 0.08" />
+    <quality shadowsize="4096" />
+  </visual>
+  <statistic extent="1.6" center="0.65 0 0.55" />
+  <equality>
+    <joint joint1="JawBlock02_Joint" joint2="JawBlock01_Joint" polycoef="0 -1 0 0 0" />
+    <joint joint1="JawBlock04_Joint" joint2="JawBlock03_Joint" polycoef="0 -1 0 0 0" />
+    <weld name="oracle_grasp_weld" body1="block" body2="ArmR08_Link" active="false" solref="0.01 1" solimp="0.9 0.95 0.001" />
+  </equality>
+  <actuator>
+    <position name="FoldingModularJoint02_Joint" joint="FoldingModularJoint02_Joint" ctrlrange="-1.31 2.1" kp="200" kv="20" />
+    <position name="FoldingModularJoint03_Joint" joint="FoldingModularJoint03_Joint" ctrlrange="-1.1338 1.74" kp="200" kv="20" />
+    <position name="Trunk_Joint" joint="Trunk_Joint" ctrlrange="-0.785 2.1" kp="200" kv="20" />
+    <position name="Head02_Joint" joint="Head02_Joint" ctrlrange="-1.23 1.57" kp="200" kv="20" />
+    <position name="Head03_Joint" joint="Head03_Joint" ctrlrange="-1.0 1.0" kp="200" kv="20" />
+    <position name="ArmR02_Joint" joint="ArmR02_Joint" ctrlrange="-1.57 1.57" kp="120" kv="12" />
+    <position name="ArmR03_Joint" joint="ArmR03_Joint" ctrlrange="-1.57 0.52" kp="120" kv="12" />
+    <position name="ArmR04_Joint" joint="ArmR04_Joint" ctrlrange="-1.57 1.57" kp="120" kv="12" />
+    <position name="ArmR05_Joint" joint="ArmR05_Joint" ctrlrange="-0.53 1.57" kp="120" kv="12" />
+    <position name="ArmR06_Joint" joint="ArmR06_Joint" ctrlrange="-2.1 2.1" kp="120" kv="12" />
+    <position name="ArmR07_Joint" joint="ArmR07_Joint" ctrlrange="-0.52 0.52" kp="120" kv="12" />
+    <position name="ArmR08_Joint" joint="ArmR08_Joint" ctrlrange="-1.0 1.0" kp="120" kv="12" />
+    <position name="ArmL02_Joint" joint="ArmL02_Joint" ctrlrange="-1.57 1.2" kp="120" kv="12" />
+    <position name="ArmL03_Joint" joint="ArmL03_Joint" ctrlrange="-0.52 1.57" kp="120" kv="12" />
+    <position name="ArmL04_Joint" joint="ArmL04_Joint" ctrlrange="-1.57 1.57" kp="120" kv="12" />
+    <position name="ArmL05_Joint" joint="ArmL05_Joint" ctrlrange="-1.57 0.53" kp="120" kv="12" />
+    <position name="ArmL06_Joint" joint="ArmL06_Joint" ctrlrange="-2.1 2.1" kp="120" kv="12" />
+    <position name="ArmL07_Joint" joint="ArmL07_Joint" ctrlrange="-0.52 0.52" kp="120" kv="12" />
+    <position name="ArmL08_Joint" joint="ArmL08_Joint" ctrlrange="-1.0 1.0" kp="120" kv="12" />
+    <position name="right_gripper" joint="JawBlock01_Joint" ctrlrange="0 0.041" kp="800" kv="35" />
+    <position name="left_gripper" joint="JawBlock03_Joint" ctrlrange="0 0.041" kp="800" kv="35" />
+  </actuator>
+  <contact>
+    <exclude body1="JawBlock01_Link" body2="JawBlock02_Link" />
+    <exclude body1="JawBlock03_Link" body2="JawBlock04_Link" />
+  </contact>
+</mujoco>

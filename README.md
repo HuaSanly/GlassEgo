@@ -19,8 +19,8 @@ data/<task>/<unit>/
 ## 安装
 
 ```bash
-conda create -n glassego python=3.11 -y
-conda activate glassego
+conda create -n GlassEgo python=3.11 -y
+conda activate GlassEgo
 
 # 使用已有预处理数据进行训练
 bash setup.sh

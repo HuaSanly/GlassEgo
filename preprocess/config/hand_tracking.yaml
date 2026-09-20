@@ -1,7 +1,7 @@
 # 是否运行整个手部预处理模块。
 enabled: true
 # 已有逐帧缓存与当前 VIO 帧号、时间戳完全一致时直接复用，避免重复加载大模型。
-reuse_existing: true
+reuse_existing: false
 
 detector:
   # auto 优先 ViTPose，初始化失败时回退 MediaPipe；另外两个值强制使用指定后端。
@@ -106,11 +106,8 @@ trajectory:
   sg_polyorder: 2
   # 连续轨迹达到该帧数后才运行优化。
   min_valid_frames: 15
-  # 轨迹优化器内部允许填补的最大连续缺失帧数。
-  fill_max_gap_frames: 6
-  # 手腕和中点坐标轴方向的 EMA 系数；越小越平滑、响应越慢。
-  ema_alpha_x: 0.2
-  ema_alpha_y: 0.2
+  # 腕和中点旋转在 SO(3) 上的 EMA 系数；越小越平滑、响应越慢。
+  ema_alpha_rotation: 0.2
 
 analysis:
   # 分析图和 HUD 使用的参考上限，不会裁剪或删除轨迹。

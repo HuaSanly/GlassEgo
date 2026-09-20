@@ -563,11 +563,13 @@ def eval_ode_inference(
             x_t = x_t + out["v_pred"] * dt
 
         if cfg.single_hand:
-            p_pos, p_o6d, p_glogit = x_t[:, :, 0:3], x_t[:, :, 3:9], x_t[:, :, 9:10]
+            p_pos, p_o6d, p_graw = x_t[:, :, 0:3], x_t[:, :, 3:9], x_t[:, :, 9:10]
         else:
-            p_pos, p_o6d, p_glogit = x_t[:, :, 0:6], x_t[:, :, 6:18], x_t[:, :, 18:20]
+            p_pos, p_o6d, p_graw = x_t[:, :, 0:6], x_t[:, :, 6:18], x_t[:, :, 18:20]
 
-        p_gprob = torch.sigmoid(p_glogit)
+        # Grasp is trained as a direct binary flow target (0=open, 1=closed),
+        # so evaluate it in the same [0, 1] space used by inference.
+        p_gprob = p_graw.clamp(0.0, 1.0)
         n_frames += int(B)
 
         zero_ratio.append(is_zero_state(x_ict, ict_mask).float().mean().detach().cpu().item())

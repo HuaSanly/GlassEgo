@@ -1,458 +1,243 @@
-
 import numpy as np
-from typing import Optional, List, Tuple, Any
 from scipy.signal import savgol_filter
-from scipy.spatial.transform import Rotation, Slerp
+from scipy.spatial.transform import Rotation
 
 try:
-    from preprocess.data_types.HandsTypes import MidpointFrameBuilder, HandData, Hands
+    from preprocess.data_types.HandsTypes import HandData, Hands, MidpointFrameBuilder
 except ModuleNotFoundError:
-    from data_types.HandsTypes import MidpointFrameBuilder, HandData, Hands
+    from data_types.HandsTypes import HandData, Hands, MidpointFrameBuilder
 
 
 class SimpleSmoother:
-    """
-    用于轨迹级平滑的实用程序类。
-    处理 1D 和 3D 信号过滤和间隙管理。
-    """
+    """Apply Savitzky-Golay smoothing to one complete finite segment."""
 
-    def __init__(
-        self,
-        dt: float,
-        sg_window: int,
-        sg_polyorder: int,
-        min_valid_frames: int,
-        fill_max_gap: int,
-    ):
-        """
-        使用过滤参数初始化平滑器。
+    def __init__(self, sg_window: int, sg_polyorder: int, min_valid_frames: int):
+        self.sg_window = int(sg_window)
+        self.sg_polyorder = int(sg_polyorder)
+        self.min_valid_frames = int(min_valid_frames)
 
-        参数：
-            dt (float): 帧之间的时间步长(1/FPS)。
-            sg_window (int)：Savitzky-Golay 窗口大小（必须为奇数）。
-            sg_polyorder (int)：Savitzky-Golay 多项式阶数。
-            min_valid_frames (int)：触发优化所需的最小帧数。
-            fill_max_gap (int)：要插值的最大连续 NaN。
-        """
-        self.dt = float(dt)
-        self.sg_window = sg_window
-        self.sg_polyorder = sg_polyorder
-        self.min_valid_frames = min_valid_frames
-        self.fill_max_gap = fill_max_gap
-
-
-    def _interp_nans_1d(self, x: np.ndarray) -> np.ndarray:
-        """
-        执行线性插值以填充一维数组中的所有 NaN。
-
-        参数：
-            x (np.ndarray): 具有可能 NaN 的一维数组。
-        返回：
-            np.ndarray：插值一维数组。
-        """
-        x = x.copy()
-        nan = np.isnan(x)
-        # 若有效值小于两个，则不进行插值
-        if np.sum(~nan) < 2:
-            return x
-        idx = np.arange(len(x))
-        x[nan] = np.interp(idx[nan], idx[~nan], x[~nan])
-        return x
-
-
-    def _fill_gaps_xyz(self, xyz: np.ndarray, valid: np.ndarray) -> np.ndarray:
-        """
-        使用线性插值填充 3D 轨迹中的短时间间隙。
-
-        参数：
-            xyz (np.ndarray): (N, 3) 轨迹数组。
-            valid (np.ndarray): (N,) 有效帧的布尔掩码。
-        返回：
-            np.ndarray：间隙填充轨迹。
-        """
-        out = xyz.copy()
-        out[~valid] = np.nan
-        idx_valid = np.where(valid)[0]
-        if len(idx_valid) < 2:
-            return out
-
-        for a, b in zip(idx_valid[:-1], idx_valid[1:]):
-            gap = b - a - 1
-            if 0 < gap <= self.fill_max_gap:
-                for d in range(3):
-                    out[a+1:b, d] = np.linspace(out[a, d], out[b, d], gap + 2)[1:-1]
-        return out
-
-
-    def optimize_positions(self, pos: np.ndarray, valid: np.ndarray) -> np.ndarray:
-        """
-        使用 Savitzky-Golay 过滤进行位置平滑的主条目。
-
-        参数：
-            pos (np.ndarray): (N, 3) 原始位置数组。
-            valid (np.ndarray): (N,) 布尔掩码。
-        返回：
-            np.ndarray：平滑的 (N, 3) 位置数组。
-        """
-        if len(pos) < self.min_valid_frames or np.sum(valid) < self.min_valid_frames:
-            return pos.copy()
-
-        # 1.过滤前填充小间隙
-        p = self._fill_gaps_xyz(pos, valid)
-        out = p.copy()
-
-        # 2.窗口大小调整（必须为奇数且<=长度）
-        w = self.sg_window
-        if w % 2 == 0: w += 1
-        w = min(w, len(p) if len(p) % 2 == 1 else len(p) - 1)
-
-        if w < 5:
-            return np.nan_to_num(out, nan=0.0)
-
-        # 3. 逐轴应用 Savitzky-Golay
-        for d in range(3):
-            xd = self._interp_nans_1d(out[:, d])
-            try:
-                out[:, d] = savgol_filter(xd, window_length=w, polyorder=min(self.sg_polyorder, w-2), mode="interp")
-            except:
-                out[:, d] = xd
-        return out
-
+    def optimize_positions(self, positions: np.ndarray) -> np.ndarray:
+        positions = np.asarray(positions, dtype=np.float64)
+        if positions.ndim != 2 or positions.shape[1] != 3:
+            raise ValueError("Position smoothing requires an Nx3 array")
+        if not np.isfinite(positions).all():
+            raise ValueError("Position smoothing requires finite values")
+        if len(positions) < self.min_valid_frames:
+            return positions.copy()
+        window = self.sg_window + self.sg_window % 2
+        window = min(window, len(positions) if len(positions) % 2 else len(positions) - 1)
+        if window < 5:
+            return positions.copy()
+        return savgol_filter(
+            positions,
+            window_length=window,
+            polyorder=min(self.sg_polyorder, window - 2),
+            axis=0,
+            mode="interp",
+        )
 
 
 class HandsTrajectoryOptimizer:
-    """
-    协调手部运动学优化过程，同时处理
-    双手跨过整个序列。
-    """
+    """Smooth complete hand segments and derive timestamp-aware velocities."""
 
-    def __init__(self, cfg: Any, dt: float):
-        """
-        参数：
-            cfg (ConfigBox/Namespace): hand_tracking.trajectory 配置
-            dt (float): 时间步长(1/FPS)。
-        """
+    def __init__(self, cfg):
         self.cfg = cfg
-        self.dt = dt
-        self.smoother = SimpleSmoother(dt,
-                                       self.cfg.sg_window,
-                                       self.cfg.sg_polyorder,
-                                       self.cfg.min_valid_frames,
-                                       self.cfg.fill_max_gap_frames
-                                       )
+        self.smoother = SimpleSmoother(cfg.sg_window, cfg.sg_polyorder, cfg.min_valid_frames)
         self.mid_builder = MidpointFrameBuilder()
 
-
     def run(self, hands: Hands) -> None:
-        """
-        执行完整的手部运动学优化流程。
-
-        参数：
-            aria_hands (AriaHands)：要修改的序列级手容器。
-        """
+        self._discard_incomplete_hands(hands)
         self._optimize_all_hands(hands)
-        print(f"[***] Smoothing pipeline finished using AriaHandsOptimizer.")
+        self.assign_velocities(hands)
 
-
-    def _optimize_all_hands(self, aria_hands: Hands) -> None:
-        """
-        迭代双手并应用基于分段的平滑。
-        """
-        for hand_attr in ["hand_r", "hand_l"]:
-            presence = np.array([getattr(f, hand_attr) is not None for f in aria_hands.hands], dtype=bool)
-            if np.sum(presence) < self.cfg.min_valid_frames:
-                continue
-
-            # 提取连续检测片段
-            segments = self._extract_segments(presence)
-
-            for (s, e) in segments:
-                seg_len = e - s
-                if seg_len < self.cfg.min_valid_frames:
+    @staticmethod
+    def remove_excessive_speed_hands(hands: Hands, max_speed_mps: float, pose_attr: str) -> int:
+        """Remove the first frame after a world-space wrist speed violation."""
+        max_speed_mps = float(max_speed_mps)
+        if not np.isfinite(max_speed_mps) or max_speed_mps <= 0.0:
+            raise ValueError("max_speed_mps must be finite and positive")
+        removed = 0
+        for hand_attr in ("hand_r", "hand_l"):
+            previous_position = None
+            previous_ts = None
+            for frame in hands.hands:
+                hand = getattr(frame, hand_attr)
+                pose = getattr(hand, pose_attr, None) if hand is not None else None
+                if not HandsTrajectoryOptimizer._valid_pose(pose):
+                    previous_position = None
+                    previous_ts = None
                     continue
+                position = np.asarray(pose[:3, 3], dtype=np.float64)
+                if previous_position is not None:
+                    delta_t = (int(frame.ts) - previous_ts) / 1e9
+                    if delta_t > 0.0 and np.linalg.norm(position - previous_position) / delta_t > max_speed_mps:
+                        setattr(frame, hand_attr, None)
+                        removed += 1
+                        continue
+                previous_position = position.copy()
+                previous_ts = int(frame.ts)
+        return removed
 
-                # 准备段数据
-                frames = aria_hands.hands[s:e]
-                hands = [getattr(fr, hand_attr) for fr in frames]
-                valid_mask = np.array([h is not None for h in hands], dtype=bool)
-
-                # Interpolated detections are created after the per-frame world
-                # conversion, so their world wrist pose is initially missing.
-                # Fill it in world space before any smoothing or differencing.
-                segment_timestamps = aria_hands.tss[s:e] if aria_hands.tss else None
-                self._fill_missing_world_wrist_poses(hands, segment_timestamps)
-
-                # --- 步骤 1：位置平滑 (Savitzky-Golay) ---
-                wrist_pos_raw = self._get_raw_pos_array(hands, "wrist_pose_raw_world")
-                thumb_pos_raw = self._get_raw_pos_array(hands, "thumb_translation_raw_world")
-                index_pos_raw = self._get_raw_pos_array(hands, "index_translation_raw_world")
-                thumb_base_raw = self._get_raw_pos_array(hands, "thumb_base_raw_world")
-                index_base_raw = self._get_raw_pos_array(hands, "index_base_raw_world")
-
-                wrist_pos_opt = self.smoother.optimize_positions(wrist_pos_raw, valid_mask)
-                thumb_pos_opt = self.smoother.optimize_positions(thumb_pos_raw, valid_mask)
-                index_pos_opt = self.smoother.optimize_positions(index_pos_raw, valid_mask)
-                thumb_base_opt = self.smoother.optimize_positions(thumb_base_raw, valid_mask)
-                index_base_opt = self.smoother.optimize_positions(index_base_raw, valid_mask)
-
-                mid_pos_opt = 0.5 * (thumb_pos_opt + index_pos_opt)
-
-                # --- 步骤 2：方向平滑 (EMA + 基础重新正交) ---
-                # 手腕和中点 EMA 缓存
-                wrist_x_ema, wrist_y_ema = None, None
-                mid_x_ema, mid_y_ema = None, None
-                mid_prev_R = None
-
-                for k in range(seg_len):
-                    h = hands[k]
-                    if h is None: continue
-
-                    # A. 更新手腕位姿（平滑位置 + EMA 方向）
-                    h.wrist_pose_opt_world = np.eye(4)
-                    h.wrist_pose_opt_world[:3, 3] = wrist_pos_opt[k]
-
-                    if h.wrist_pose_raw_world is not None:
-                        wr_raw_R = h.wrist_pose_raw_world[:3, :3]
-                        wr_x, wrist_x_ema = self._ema_unit_vec(wr_raw_R[:, 0], wrist_x_ema, alpha=self.cfg.ema_alpha_x)
-                        wr_y, wrist_y_ema = self._ema_unit_vec(wr_raw_R[:, 1], wrist_y_ema, alpha=self.cfg.ema_alpha_y)
-
-                        # 手腕的 Gram-Schmidt 正交化
-                        wr_z = np.cross(wr_x, wr_y)
-                        wr_z /= (np.linalg.norm(wr_z) + 1e-6)
-                        wr_y = np.cross(wr_z, wr_x)
-                        h.wrist_pose_opt_world[:3, :3] = np.column_stack([wr_x, wr_y, wr_z])
-
-                    # B. 更新平滑的指尖和 MCP 底座
-                    h.thumb_translation_opt_world = thumb_pos_opt[k]
-                    h.index_translation_opt_world = index_pos_opt[k]
-                    h.thumb_base_opt_world = thumb_base_opt[k]
-                    h.index_base_opt_world = index_base_opt[k]
-
-                    # C. 更新中点位姿（平滑位置 + 夹爪坐标系重建）
-                    # 使用平滑后的刚性 MCP 底座重建夹爪坐标系。
-                    mid_R_rebuild = self.mid_builder.build(
-                        thumb_w=thumb_pos_opt[k],
-                        index_w=index_pos_opt[k],
-                        thumb_base_w=thumb_base_opt[k],
-                        index_base_w=index_base_opt[k],
-                        wrist_w=wrist_pos_opt[k],
-                        midpoint_w=mid_pos_opt[k],
-                        prev_R=mid_prev_R
+    def _optimize_all_hands(self, hands: Hands) -> None:
+        for hand_attr in ("hand_r", "hand_l"):
+            presence = np.array([getattr(frame, hand_attr) is not None for frame in hands.hands], dtype=bool)
+            for start, end in self._extract_segments(presence):
+                segment = [getattr(frame, hand_attr) for frame in hands.hands[start:end]]
+                position_fields = {
+                    name: self.smoother.optimize_positions(self._positions(segment, name))
+                    for name in (
+                        "wrist_pose_raw_world",
+                        "thumb_translation_raw_world",
+                        "index_translation_raw_world",
+                        "thumb_base_raw_world",
+                        "index_base_raw_world",
                     )
-
-                    # 如果构造失败，则退回到平滑的手腕方向
-                    if mid_R_rebuild is None:
-                        mid_R_rebuild = mid_prev_R if mid_prev_R is not None else h.wrist_pose_opt_world[:3, :3]
-
-                    # EMA 中点基向量的平滑
-                    mid_x, mid_x_ema = self._ema_unit_vec(mid_R_rebuild[:, 0], mid_x_ema, alpha=self.cfg.ema_alpha_x)
-                    mid_y, mid_y_ema = self._ema_unit_vec(mid_R_rebuild[:, 1], mid_y_ema, alpha=self.cfg.ema_alpha_y)
-
-                    # 中点的 Gram-Schmidt 正交化
-                    mid_z = np.cross(mid_x, mid_y)
-                    mid_z /= (np.linalg.norm(mid_z) + 1e-6)
-                    mid_y = np.cross(mid_z, mid_x)
-                    mid_R_opt = np.column_stack([mid_x, mid_y, mid_z])
-
-                    h.midpoint_translation_opt_world = mid_pos_opt[k]
-                    h.midpoint_pose_opt_world = np.eye(4)
-                    h.midpoint_pose_opt_world[:3, :3] = mid_R_opt
-                    h.midpoint_pose_opt_world[:3, 3] = mid_pos_opt[k]
-                    h.midpoint_orientation_opt_world = mid_R_opt.flatten()
-                    mid_prev_R = mid_R_opt
-
-                # --- 步骤 3 和 4：速度计算（有限差分）---
-                self._assign_linear_vel_from_pos(hands, self.dt, key="wrist")
-                self._assign_linear_vel_from_pos(hands, self.dt, key="midpoint")
-                self._assign_angular_vel_from_rot(hands, self.dt, key="wrist")
-                self._assign_angular_vel_from_rot(hands, self.dt, key="midpoint")
-
-
-    @staticmethod
-    def _get_raw_pos_array(hands: List[Optional[HandData]], attr_name: str) -> np.ndarray:
-        """用于将位置向量或位姿翻译提取到 numpy 数组中的实用程序。"""
-        res = []
-        for h in hands:
-            val = getattr(h, attr_name) if h else None
-            if val is not None and val.shape == (4, 4):
-                val = val[:3, 3]
-            res.append(val if val is not None else np.zeros(3))
-        return np.array(res)
-
-    @staticmethod
-    def _fill_missing_world_wrist_poses(
-        hands: List[Optional[HandData]],
-        timestamps: Optional[List[int]] = None,
-    ) -> None:
-        """Fill missing wrist world poses with world-space Slerp.
-
-        Short hand gaps are represented by ``HandData`` objects whose camera
-        pose exists but whose world pose was never computed.  Leaving those
-        rotations as the optimizer's identity fallback makes a fixed world
-        basis rotation change the measured angular speed.  Interpolate between
-        the nearest valid world poses instead; at a one-sided gap, carry the
-        nearest continuous pose forward/backward.
-        """
-        known = [
-            index
-            for index, hand in enumerate(hands)
-            if hand is not None and HandsTrajectoryOptimizer._valid_pose(
-                hand.wrist_pose_raw_world
-            )
-        ]
-        if not known:
-            return
-
-        for index, hand in enumerate(hands):
-            if hand is None or HandsTrajectoryOptimizer._valid_pose(
-                hand.wrist_pose_raw_world
-            ):
-                continue
-            if hand.wrist_pose is None:
-                continue
-
-            left = max((candidate for candidate in known if candidate < index), default=None)
-            right = min((candidate for candidate in known if candidate > index), default=None)
-            if left is not None and right is not None:
-                ratio = HandsTrajectoryOptimizer._interpolation_ratio(
-                    index, left, right, timestamps
+                }
+                midpoint_positions = 0.5 * (
+                    position_fields["thumb_translation_raw_world"]
+                    + position_fields["index_translation_raw_world"]
                 )
-                hand.wrist_pose_raw_world = HandsTrajectoryOptimizer._slerp_pose(
-                    hands[left].wrist_pose_raw_world,
-                    hands[right].wrist_pose_raw_world,
-                    ratio,
-                )
-            elif left is not None:
-                hand.wrist_pose_raw_world = hands[left].wrist_pose_raw_world.copy()
-            elif right is not None:
-                hand.wrist_pose_raw_world = hands[right].wrist_pose_raw_world.copy()
+                wrist_rotation = None
+                midpoint_rotation = None
+                alpha = float(self.cfg.ema_alpha_rotation)
+                for offset, hand in enumerate(segment):
+                    wrist_rotation = self._ema_rotation(
+                        hand.wrist_pose_raw_world[:3, :3], wrist_rotation, alpha
+                    )
+                    wrist_position = position_fields["wrist_pose_raw_world"][offset]
+                    hand.wrist_pose_opt_world = self._pose(wrist_rotation, wrist_position)
+                    for name in (
+                        "thumb_translation_raw_world",
+                        "index_translation_raw_world",
+                        "thumb_base_raw_world",
+                        "index_base_raw_world",
+                    ):
+                        setattr(hand, name.replace("_raw_", "_opt_"), position_fields[name][offset])
 
-    @staticmethod
-    def _valid_pose(pose: Optional[np.ndarray]) -> bool:
-        if pose is None:
-            return False
-        pose = np.asarray(pose)
-        if pose.shape != (4, 4) or not np.all(np.isfinite(pose)):
-            return False
-        try:
-            Rotation.from_matrix(pose[:3, :3])
-        except ValueError:
-            return False
-        return True
+                    midpoint_raw = self.mid_builder.build(
+                        hand.thumb_translation_opt_world,
+                        hand.index_translation_opt_world,
+                        hand.thumb_base_opt_world,
+                        hand.index_base_opt_world,
+                        wrist_position,
+                        midpoint_positions[offset],
+                    )
+                    if midpoint_raw is None:
+                        hand.midpoint_pose_opt_world = None
+                        hand.midpoint_translation_opt_world = None
+                        hand.midpoint_orientation_opt_world = None
+                        midpoint_rotation = None
+                        continue
+                    midpoint_rotation = self._ema_rotation(midpoint_raw, midpoint_rotation, alpha)
+                    hand.midpoint_translation_opt_world = midpoint_positions[offset]
+                    hand.midpoint_pose_opt_world = self._pose(midpoint_rotation, midpoint_positions[offset])
+                    hand.midpoint_orientation_opt_world = midpoint_rotation.flatten()
 
-    @staticmethod
-    def _interpolation_ratio(
-        index: int,
-        left: int,
-        right: int,
-        timestamps: Optional[List[int]],
-    ) -> float:
-        if timestamps is not None:
-            left_ts = float(timestamps[left])
-            right_ts = float(timestamps[right])
-            if right_ts > left_ts:
-                return float(np.clip(
-                    (float(timestamps[index]) - left_ts) / (right_ts - left_ts),
-                    0.0,
-                    1.0,
-                ))
-        return float((index - left) / (right - left))
+    def assign_velocities(self, hands: Hands) -> None:
+        """Recompute raw and optimized velocities using each frame's timestamp."""
+        for hand_attr in ("hand_r", "hand_l"):
+            previous = {"raw": None, "opt": None}
+            for frame in hands.hands:
+                hand = getattr(frame, hand_attr)
+                if hand is None:
+                    previous = {"raw": None, "opt": None}
+                    continue
+                for kind in ("raw", "opt"):
+                    wrist_pose = getattr(hand, f"wrist_pose_{kind}_world", None)
+                    midpoint_pose = getattr(hand, f"midpoint_pose_{kind}_world", None)
+                    midpoint_position = getattr(hand, f"midpoint_translation_{kind}_world", None)
+                    if not self._valid_pose(wrist_pose) or not self._valid_pose(midpoint_pose) or not self._valid_point(midpoint_position):
+                        previous[kind] = None
+                        continue
+                    current = (int(frame.ts), wrist_pose, midpoint_pose, np.asarray(midpoint_position, dtype=float))
+                    prior = previous[kind]
+                    dt = (current[0] - prior[0]) / 1e9 if prior is not None else None
+                    wrist_linear = (current[1][:3, 3] - prior[1][:3, 3]) / dt if dt and dt > 0 else np.zeros(3)
+                    midpoint_linear = (current[3] - prior[3]) / dt if dt and dt > 0 else np.zeros(3)
+                    wrist_angular = self._angular_velocity(prior[1][:3, :3] if prior else None, current[1][:3, :3], dt)
+                    midpoint_angular = self._angular_velocity(prior[2][:3, :3] if prior else None, current[2][:3, :3], dt)
+                    setattr(hand, f"wrist_lin_vel_{kind}_world", wrist_linear)
+                    setattr(hand, f"wrist_ang_vel_{kind}_world", wrist_angular)
+                    setattr(hand, f"midpoint_lin_vel_{kind}_world", midpoint_linear)
+                    setattr(hand, f"midpoint_ang_vel_{kind}_world", midpoint_angular)
+                    previous[kind] = current
 
-    @staticmethod
-    def _slerp_pose(left: np.ndarray, right: np.ndarray, ratio: float) -> np.ndarray:
-        result = np.eye(4, dtype=np.float64)
-        result[:3, 3] = (1.0 - ratio) * left[:3, 3] + ratio * right[:3, 3]
-        rotations = Rotation.from_matrix(
-            np.stack([left[:3, :3], right[:3, :3]])
+    @classmethod
+    def _discard_incomplete_hands(cls, hands: Hands) -> None:
+        for frame in hands.hands:
+            for hand_attr in ("hand_r", "hand_l"):
+                hand = getattr(frame, hand_attr)
+                if hand is not None and not cls.has_complete_raw_geometry(hand):
+                    setattr(frame, hand_attr, None)
+
+    @classmethod
+    def has_complete_raw_geometry(cls, hand: HandData) -> bool:
+        return all(cls._valid_pose(getattr(hand, name, None)) for name in ("wrist_pose_raw_world", "midpoint_pose_raw_world")) and all(
+            cls._valid_point(getattr(hand, name, None))
+            for name in ("thumb_translation_raw_world", "index_translation_raw_world", "thumb_base_raw_world", "index_base_raw_world", "midpoint_translation_raw_world")
         )
-        result[:3, :3] = Slerp([0.0, 1.0], rotations)([ratio]).as_matrix()[0]
-        return result
-
 
     @staticmethod
-    def _extract_segments(presence: np.ndarray) -> List[Tuple[int, int]]:
-        """标识有效手部检测的连续 start/end 索引。"""
-        segs = []
-        T, i = len(presence), 0
-        while i < T:
-            if not presence[i]:
-                i += 1
-                continue
-            j = i + 1
-            while j < T and presence[j]:
-                j += 1
-            segs.append((i, j))
-            i = j
-        return segs
-
-
-    def _ema_unit_vec(self, v: np.ndarray, v_ema: Optional[np.ndarray], alpha: float) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        将指数移动平均线应用于具有符号一致性的单位向量。
-        """
-        v = np.asarray(v, dtype=np.float64)
-        v /= (np.linalg.norm(v) + 1e-6)
-
-        if v_ema is None:
-            return v, v.copy()
-
-        # 确保符号一致性，防止平滑过程中出现 180 度跳跃
-        if float(np.dot(v, v_ema)) < 0.0:
-            v = -v
-
-        v_new = (1.0 - float(alpha)) * v_ema + float(alpha) * v
-        v_new /= (np.linalg.norm(v_new) + 1e-6)
-        return v_new, v_new.copy()
-
+    def _positions(segment, attribute: str) -> np.ndarray:
+        positions = []
+        for hand in segment:
+            value = getattr(hand, attribute, None)
+            if isinstance(value, np.ndarray) and value.shape == (4, 4):
+                value = value[:3, 3]
+            if not HandsTrajectoryOptimizer._valid_point(value):
+                raise ValueError(f"Incomplete hand trajectory field: {attribute}")
+            positions.append(value)
+        return np.asarray(positions, dtype=np.float64)
 
     @staticmethod
-    def _assign_linear_vel_from_pos(hands: List[HandData], dt: float, key: str = "wrist") -> None:
-        """计算线速度 v = (p_curr - p_prev) / dt。"""
-        prev_p = None
-        for h in hands:
-            if h is None:
-                prev_p = None
-                continue
-            p = h.wrist_pose_opt_world[:3, 3] if key == "wrist" else h.midpoint_translation_opt_world
-            if p is None:
-                prev_p = None
-                continue
-            vel = (p - prev_p) / dt if prev_p is not None else np.zeros(3)
-            if key == "wrist": h.wrist_lin_vel_opt_world = vel
-            else: h.midpoint_lin_vel_opt_world = vel
-            prev_p = p.copy()
-
+    def _valid_point(value) -> bool:
+        value = np.asarray(value) if value is not None else None
+        return value is not None and value.shape == (3,) and bool(np.isfinite(value).all())
 
     @staticmethod
-    def _assign_angular_vel_from_rot(hands: List[HandData], dt: float, key: str = "wrist") -> None:
-        """
-        使用旋转对数图计算角速度：w = log(R_prev.T @ R_curr) / dt。
-        """
-        prev_R = None
-        for h in hands:
-            if h is None:
-                prev_R = None
+    def _valid_pose(value) -> bool:
+        if value is None:
+            return False
+        pose = np.asarray(value, dtype=np.float64)
+        if pose.shape != (4, 4) or not np.isfinite(pose).all():
+            return False
+        rotation = pose[:3, :3]
+        return np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-5) and np.isclose(np.linalg.det(rotation), 1.0, atol=1e-5)
+
+    @staticmethod
+    def _pose(rotation: np.ndarray, translation: np.ndarray) -> np.ndarray:
+        pose = np.eye(4, dtype=np.float64)
+        pose[:3, :3] = Rotation.from_matrix(rotation).as_matrix()
+        pose[:3, 3] = translation
+        return pose
+
+    @staticmethod
+    def _ema_rotation(current: np.ndarray, previous: np.ndarray | None, alpha: float) -> np.ndarray:
+        if not 0.0 < alpha <= 1.0:
+            raise ValueError("ema_alpha_rotation must be in (0, 1]")
+        current = Rotation.from_matrix(current).as_matrix()
+        if previous is None:
+            return current
+        delta = Rotation.from_matrix(previous.T @ current).as_rotvec()
+        return previous @ Rotation.from_rotvec(alpha * delta).as_matrix()
+
+    @staticmethod
+    def _angular_velocity(previous, current, dt) -> np.ndarray:
+        if previous is None or current is None or dt is None or dt <= 0:
+            return np.zeros(3)
+        return Rotation.from_matrix(previous.T @ current).as_rotvec() / dt
+
+    @staticmethod
+    def _extract_segments(presence: np.ndarray):
+        segments = []
+        index = 0
+        while index < len(presence):
+            if not presence[index]:
+                index += 1
                 continue
-
-            curr_pose = h.wrist_pose_opt_world if key == "wrist" else h.midpoint_pose_opt_world
-            if curr_pose is None:
-                prev_R = None
-                continue
-
-            curr_R = curr_pose[:3, :3]
-
-            if prev_R is None:
-                ang_vel = np.zeros(3)
-            else:
-                try:
-                    # 计算相对旋转并映射到旋转向量（轴角空间）
-                    from scipy.spatial.transform import Rotation as R_lib
-                    rel_rot_mat = prev_R.T @ curr_R
-                    ang_vel = R_lib.from_matrix(rel_rot_mat).as_rotvec() / dt
-                except Exception:
-                    ang_vel = np.zeros(3)
-
-            if key == "wrist": h.wrist_ang_vel_opt_world = ang_vel
-            else: h.midpoint_ang_vel_opt_world = ang_vel
-
-            prev_R = curr_R.copy()
+            end = index + 1
+            while end < len(presence) and presence[end]:
+                end += 1
+            segments.append((index, end))
+            index = end
+        return segments

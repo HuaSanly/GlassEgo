@@ -67,6 +67,17 @@ def load_cached_hands(
     if not timestamps:
         raise ValueError("Cannot load hand cache without expected timestamps")
 
+    extra_frames = {
+        int(frame_dir.name)
+        for root in ("temp_data", "all_data")
+        for frame_dir in (unit_dir / "preprocess" / root).glob("*")
+        if frame_dir.name.isdigit()
+        and (frame_dir / filename).is_file()
+        and int(frame_dir.name) >= len(timestamps)
+    }
+    if extra_frames:
+        raise ValueError(f"Hand cache has unexpected frames: {sorted(extra_frames)}")
+
     frames = []
     for frame_idx, timestamp_ns in enumerate(timestamps):
         candidates = (
@@ -105,7 +116,7 @@ def _validate_frame_metadata(
     expected_timestamp_ns: int,
     path: Path,
 ) -> None:
-    if document.get("schema_version") != 1:
+    if not isinstance(document, dict) or document.get("schema_version") != 2:
         raise ValueError(f"Unsupported hand cache schema: {path}")
     expected = {
         "camera_frame": OPENCV_CAMERA_FRAME,
@@ -116,9 +127,9 @@ def _validate_frame_metadata(
     for key, value in expected.items():
         if document.get(key) != value:
             raise ValueError(f"Hand cache has invalid {key}: {path}")
-    if int(document.get("idx", -1)) != expected_idx:
+    if document.get("idx") != expected_idx:
         raise ValueError(f"Hand cache frame index is not aligned: {path}")
-    if int(document.get("ts", -1)) != expected_timestamp_ns:
+    if document.get("ts") != expected_timestamp_ns:
         raise ValueError(f"Hand cache timestamp is not aligned: {path}")
 
 
@@ -127,6 +138,10 @@ def _parse_hand(document: dict | None, is_right: bool, path: Path) -> HandData |
         return None
     if not isinstance(document, dict):
         raise ValueError(f"Hand cache side must be an object: {path}")
+
+    tracking_state = document.get("tracking_state")
+    if tracking_state not in ("observed", "interpolated"):
+        raise ValueError(f"Hand cache has invalid tracking_state: {path}")
 
     confidence = document.get("confidence")
     if confidence is not None and not np.isfinite(float(confidence)):
@@ -153,6 +168,7 @@ def _parse_hand(document: dict | None, is_right: bool, path: Path) -> HandData |
     return HandData(
         **values,
         is_right=is_right,
+        tracking_state=tracking_state,
         confidence=None if confidence is None else float(confidence),
         grasp_state=float(np.clip(grasp_value, 0.0, 1.0)),
         grasp_tip_distance_m=_optional_float(document.get("grasp_tip_distance_m")),

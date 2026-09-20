@@ -6,8 +6,8 @@
 # 用法：
 #   git clone <repository-url>
 #   cd GlassEgo
-#   conda create -n glassego python=3.11 -y
-#   conda activate glassego
+#   conda create -n GlassEgo python=3.11 -y
+#   conda activate GlassEgo
 #   bash setup.sh
 #
 # 该脚本的作用：
@@ -66,8 +66,8 @@ step "[1/7] Verifying conda environment"
 if [ -z "${CONDA_DEFAULT_ENV:-}" ] || [ "$CONDA_DEFAULT_ENV" = "base" ]; then
     error "No conda environment is active (or you're in 'base').
 Please run:
-  conda create -n humanego python=3.11 -y
-  conda activate humanego
+  conda create -n GlassEgo python=3.11 -y
+  conda activate GlassEgo
   bash setup.sh"
 fi
 
@@ -112,6 +112,10 @@ fi
 grep -v -E "$FILTER_PATTERN" requirements.txt > /tmp/requirements_filtered.txt
 $PIP install -r /tmp/requirements_filtered.txt
 rm /tmp/requirements_filtered.txt
+
+# PyRender pins PyOpenGL 3.1.0, but current MuJoCo EGL bindings need a newer
+# release for offscreen rendering. Keep the runtime-compatible version last.
+$PIP install --upgrade "PyOpenGL>=3.1.7"
 
 # 确保 numpy 没有降级
 NUMPY_VER=$($PYTHON -c "import numpy; print(numpy.__version__)")
@@ -264,6 +268,7 @@ check_import "torch (CUDA)"          "import torch; assert torch.cuda.is_availab
 check_import "torchvision"           "import torchvision"
 check_import "numpy"                 "import numpy"
 check_import "scipy"                 "import scipy"
+check_import "mujoco"                "import mujoco"
 check_import "opencv + ChArUco"      "import cv2; assert hasattr(cv2.aruco, 'CharucoDetector')"
 check_import "open3d"                "import open3d"
 check_import "PIL"                   "from PIL import Image"
