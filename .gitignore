@@ -34,3 +34,5 @@ datacollection/rokidglass3/calibration/board/*
 !datacollection/rokidglass3/calibration/board/.gitkeep
 datacollection/rokidglass3/calibration/report/*
 !datacollection/rokidglass3/calibration/report/.gitkeep
+
+/ui/
