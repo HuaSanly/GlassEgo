@@ -12,7 +12,6 @@ models/
 runs/
 # Keep formal tests versioned; ignore only local test caches and generated data.
 tests/__pycache__/
-tests/
 tools/
 environment/
 
@@ -28,11 +27,5 @@ __pycache__/
 *.pt
 *.pth
 *.safetensors
-
-# Rokid Glass3 calibration outputs
-datacollection/rokidglass3/calibration/board/*
-!datacollection/rokidglass3/calibration/board/.gitkeep
-datacollection/rokidglass3/calibration/report/*
-!datacollection/rokidglass3/calibration/report/.gitkeep
 
 /ui/

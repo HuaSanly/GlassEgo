@@ -1,8 +1,8 @@
-# GlassEgo
+# GlassEgo Compute
 
-GlassEgo 是面向第一视角眼镜数据的处理与训练项目，包含 Rokid Glass3 标定、VIO、手部与物体跟踪、训练数据生成，以及 Flow Matching 策略训练。
+这是 GlassEgo 的离线预处理与 Flow Matching 训练子集。它不包含数据录制、设备标定、在线/机器人推理、仿真或 UI。
 
-## 数据结构
+## 数据布局
 
 ```text
 data/<task>/<unit>/
@@ -14,64 +14,42 @@ data/<task>/<unit>/
 └── preprocess/
 ```
 
-每个 task 至少需要两个有效 unit 才能训练。完整数据约定见 [DATA_STORAGE_PROTOCOL.md](DATA_STORAGE_PROTOCOL.md)。
+每个 task 至少需要两个有效 unit。完整字段、时间戳和 Aria MPS 世界坐标约定见 [DATA_STORAGE_PROTOCOL.md](DATA_STORAGE_PROTOCOL.md)。数据、权重和运行产物始终位于 Git 之外。
 
-## 安装
+## 环境
+
+目标平台是 Linux x86_64、Python 3.11、PyTorch 2.5.1、CUDA 12.1。环境由根目录的 `requirements.txt` 和 `setup.sh` 管理：
 
 ```bash
-conda create -n GlassEgo python=3.11 -y
-conda activate GlassEgo
-
-# 使用已有预处理数据进行训练
+conda create -n glassego-compute python=3.11 pip -y
+conda activate glassego-compute
 bash setup.sh
-
-# 运行完整手部预处理
-SKIP_HAND=0 bash setup.sh
 ```
 
-## 标定
-
-```bash
-# 生成相机标定板
-python datacollection/rokidglass3/calibration/calibration_pipeline.py board
-
-# 相机内参
-python datacollection/rokidglass3/calibration/calibration_pipeline.py camera \
-  --unit data/calibration/camera_calibration
-
-# IMU 噪声
-python datacollection/rokidglass3/calibration/calibration_pipeline.py imu \
-  --unit data/calibration/imu_calibration
-
-# 相机与 IMU 外参
-python datacollection/rokidglass3/calibration/calibration_pipeline.py extrinsic-board
-python datacollection/rokidglass3/calibration/calibration_pipeline.py extrinsic \
-  --unit data/calibration/cam_imu_calibration
-
-# 验证标定结果
-python datacollection/rokidglass3/calibration/calibration_pipeline.py validate
-```
-
-详细说明见 [标定文档](datacollection/rokidglass3/calibration/README.md)。
+Basalt 是唯一的外部 C++ 运行时。安装 `basalt_vio` 后确保它位于 `PATH`；已有有效 VIO 缓存时不需要重新执行 Basalt。
 
 ## 预处理
 
-配置位于 `preprocess/config/`。命令会扫描全部 `data/<task>/<unit>`：
-
 ```bash
-python preprocess/pipeline.py
+python preprocess/pipeline.py \
+  --data-root /mnt/datasets/glassego \
+  --units <task>/<unit>...
 ```
 
-产物写入各 unit 的 `preprocess/` 目录。
+也可以使用现有的 `--units <task>/<unit>...` 和 `--config-root` 参数。结果写入每个 unit 的 `preprocess/` 目录。
 
 ## 训练
 
 ```bash
-# 使用默认配置
-python -m training.FlowMatchingTrainer --task "<task>" --job baseline
-
-# 使用 training/config/<task>/<job>.yaml
-python -m training.FlowMatchingTrainer --task "<task>" --job baseline --use_cfg
+python -m training.FlowMatchingTrainer \
+  --data_root /mnt/datasets/glassego \
+  --runs_root /mnt/runs \
+  --task <task> \
+  --job baseline
 ```
 
-`--job` 用于区分训练运行；结果写入 `runs/<task>/<job>/`。更多参数见 [训练文档](training/README.md)。
+训练消费 `preprocess/all_data/`，检查点、日志和评估结果写入 `runs/<task>/[<exp>/]<job>/`。
+
+## 分支规则
+
+`main` 是源码真源，`compute` 是从 `main` 投影得到的离线计算子集。不要把数据、模型、运行产物或独立的 `ui/` 仓库加入本仓库。

@@ -197,7 +197,7 @@ For the exact defaults, read `TrainConfig` in `FlowMatchingTrainer.py`.
 
 To train a policy on **your own task**:
 
-1. **Preprocess** your recordings (see [preprocessing](../preprocess/README.md)) so you
+1. **Preprocess** your data (see the root [README](../README.md)) so you
    have `data/<your_task>/<unit>/preprocess/all_data/…`. You need **at least two
    valid units** (one is held out for eval).
 2. **Create** `training/config/<your_task>/baseline.yaml` and adjust:
