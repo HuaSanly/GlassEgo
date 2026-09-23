@@ -145,7 +145,7 @@ class TrainConfig:
 
     # --- Mode & Sizing ---
     image_size: Tuple[int, int] = (240, 320)
-    pred_horizon: int = 50
+    pred_horizon: int = 10
     single_hand: bool = False
     single_hand_side: str = "right"
     max_ict: int = 8

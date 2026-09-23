@@ -14,7 +14,7 @@ runs/
 tests/__pycache__/
 tools/
 environment/
-
+tests/
 
 # Python bytecode and caches
 __pycache__/
