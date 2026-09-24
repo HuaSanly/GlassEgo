@@ -10,7 +10,7 @@ data/
 tem_data/
 models/
 runs/
-# Keep formal tests versioned; ignore only local test caches and generated data.
+# Local tests
 tests/__pycache__/
 tools/
 environment/
