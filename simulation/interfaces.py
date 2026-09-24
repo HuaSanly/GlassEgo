@@ -7,7 +7,7 @@ This is a *reference template*. It will NOT run out of the box on your setup —
 it is meant to show the standard structure of a HumanEgo inference stack so you
 can drop in your own camera, robot and perception and reuse the rest unchanged.
 
-The whole inference loop (`run_inference.py`) is written against the three
+The simulation policy loop (`run_inference_sim.py`) is written against the three
 abstract interfaces below, so the policy is completely decoupled from hardware:
 
     Camera      -> any calibrated RGB-D camera   (paper example: CamRS.py / Intel RealSense)
@@ -67,7 +67,7 @@ class Camera(Protocol):
     """A calibrated RGB-D camera.  Paper example: `CamRS` (Intel RealSense).
 
     `CamRS` already exposes `get_rgbd()` -> CamRSData(rgb, depth_m, ...) and a
-    `k_rgb` intrinsics attribute; wrap it in a tiny adapter (see run_inference.py)
+    `k_rgb` intrinsics attribute; wrap it in a tiny adapter (see interface_sim.py)
     to satisfy this interface.
     """
 
@@ -126,7 +126,7 @@ class Perception(Protocol):
     """Turns raw RGB-D into (a) object 6DoF poses and (b) a clean, embodiment-
     agnostic RGB image — the two things the policy needs from the world.
 
-    Paper reference implementation (see preprocess/ and run_inference.py):
+    Paper reference implementation (see preprocess/ and policy.py):
         estimate_objects : open-vocab detect+segment (DINO-SAM) -> lift mask
                            pixels to 3D via depth -> robust filter -> PCA 6DoF pose.
         make_clean_image : inpaint the real arm out of the frame (LaMa), then

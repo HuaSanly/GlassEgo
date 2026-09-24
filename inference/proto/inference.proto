@@ -1,0 +1,130 @@
+syntax = "proto3";
+
+package remote_inference.v1;
+
+import "google/protobuf/empty.proto";
+
+service AsyncInference {
+  rpc OpenSession(OpenSessionRequest) returns (OpenSessionResponse);
+  rpc SendObservation(Observation) returns (ObservationAck);
+  rpc GetActionChunk(ActionRequest) returns (ActionChunk);
+  rpc CloseSession(CloseSessionRequest) returns (google.protobuf.Empty);
+}
+
+message OpenSessionRequest {
+  uint32 protocol_major = 1;
+  uint32 protocol_minor = 2;
+  string robot_id = 3;
+  string task = 4;
+  string policy_id = 5;
+  uint64 action_period_ns = 6;
+  uint32 action_horizon = 7;
+  repeated string arm_ids = 8;
+  repeated string camera_ids = 9;
+  uint64 control_period_ns = 10;
+}
+
+message OpenSessionResponse {
+  string session_id = 1;
+  string reference_frame_id = 2;
+  uint64 action_period_ns = 3;
+  uint32 action_horizon = 4;
+  uint64 control_period_ns = 5;
+}
+
+message Observation {
+  string session_id = 1;
+  uint64 observation_id = 2;
+  uint64 control_tick = 3;
+  uint64 capture_time_ns = 4;
+  repeated ArmState arms = 5;
+  repeated CameraFrame cameras = 6;
+}
+
+message ArmState {
+  string arm_id = 1;
+  Pose ee_pose = 2;
+  float gripper = 3;
+}
+
+message CameraFrame {
+  string camera_id = 1;
+  uint64 capture_time_ns = 2;
+  uint32 width = 3;
+  uint32 height = 4;
+  string left_encoding = 5;
+  bytes left_data = 6;
+  string right_encoding = 7;
+  bytes right_data = 8;
+  bool rectified = 9;
+}
+
+message ObservationAck {
+  uint64 observation_id = 1;
+  bool accepted = 2;
+  uint32 server_queue_depth = 3;
+  string reason = 4;
+}
+
+message ActionRequest {
+  string session_id = 1;
+  uint64 last_executed_tick = 2;
+  uint32 local_queue_size = 3;
+  uint64 newest_observation_id = 4;
+  uint32 max_wait_ms = 5;
+}
+
+message ActionChunk {
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    READY = 1;
+    NO_ACTION = 2;
+    SESSION_STOPPED = 3;
+    ERROR = 4;
+  }
+
+  Status status = 1;
+  string session_id = 2;
+  uint64 chunk_id = 3;
+  uint64 source_observation_id = 4;
+  uint64 start_tick = 5;
+  uint64 action_period_ns = 6;
+  uint64 expires_at_tick = 7;
+  repeated ActionStep steps = 8;
+  float done_probability = 9;
+  bool terminal = 10;
+}
+
+message ActionStep {
+  uint64 target_tick = 1;
+  repeated ArmAction arm_actions = 2;
+}
+
+message ArmAction {
+  string arm_id = 1;
+  Pose target_ee_pose = 2;
+  float gripper = 3;
+}
+
+message Pose {
+  string frame_id = 1;
+  Vector3 position_m = 2;
+  Quaternion orientation_xyzw = 3;
+}
+
+message Vector3 {
+  float x = 1;
+  float y = 2;
+  float z = 3;
+}
+
+message Quaternion {
+  float x = 1;
+  float y = 2;
+  float z = 3;
+  float w = 4;
+}
+
+message CloseSessionRequest {
+  string session_id = 1;
+}

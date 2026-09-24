@@ -21,7 +21,7 @@ import mujoco
 import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
 
-from interfaces import Camera, Frame, ObjectState, Perception, RobotArm
+from simulation.interfaces import Camera, Frame, ObjectState, Perception, RobotArm
 
 
 CV_FROM_MUJOCO_CAMERA = np.diag([1.0, -1.0, -1.0]).astype(np.float32)

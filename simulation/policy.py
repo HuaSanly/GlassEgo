@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # @FileName: policy.py
 """
-ICTPolicy — the model-side of the remote HumanEgo policy server.
+ICTPolicy — the model-side of HumanEgo inference (reference template).
 
 Wraps the trained FlowMatchingModel and exposes exactly what the robot loop needs:
 
@@ -13,9 +13,10 @@ Wraps the trained FlowMatchingModel and exposes exactly what the robot loop need
     infer          flow-matching ODE solve -> future hand trajectory + done
     decode_ee_in_cam   map a prediction back to an EE target in the camera frame
 
-The loader reads architecture flags from the checkpoint's training config so
-released checkpoints remain compatible. Hardware and transport code do not
-belong here.
+This is a cleaned distillation of the production policy loader. It still reads
+every architecture flag from the checkpoint's training config so it loads the
+real released checkpoints; it just drops the legacy-config auto-migration and
+the checkpoint-key auto-detection that the production loader adds for robustness.
 
 It mirrors the ICT construction in training/FlowMatchingDataloader._build_ict so
 train- and test-time tokens are identical — that matching is what makes the
@@ -26,19 +27,12 @@ matrices in the CAMERA frame, trajectories come out as EE targets in that frame.
 from __future__ import annotations
 
 import json
-import logging
 import os
-from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+import cv2
 import numpy as np
 import torch
-from PIL import Image
-
-try:
-    import cv2
-except ImportError:  # pragma: no cover - deployments normally install OpenCV
-    cv2 = None
 
 # Real, shipped modules (present in this repo) — this is "how to load the model".
 from training.FlowMatchingModel import FlowMatchingModel
@@ -51,12 +45,7 @@ from utils.utils_math import (
     unnormalize_pos,
 )
 
-@dataclass
-class ObjectState:
-    """Object pose consumed by ICT construction."""
-
-    T_in_cam: np.ndarray
-    kpts_local: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), dtype=np.float32))
+from simulation.interfaces import ObjectState
 
 
 def _inv(T: np.ndarray) -> np.ndarray:
@@ -64,27 +53,20 @@ def _inv(T: np.ndarray) -> np.ndarray:
 
 
 class ICTPolicy:
-    def __init__(
-        self,
-        cfg: dict,
-        device: Optional[str] = None,
-        logger: logging.Logger | None = None,
-    ):
+    def __init__(self, cfg: dict, device: str = "cuda"):
         """
         Args:
-            cfg: the `policy` section of the inference config (see
-                 cfg/inference/example_dualarm.yaml). Must contain `ckpt`.
-            device: optional device override. When omitted, ``cfg["device"]``
-                is used and defaults to ``"cuda"``.
+            cfg: the `policy` section of ``sim_config.yaml``. Must contain
+                 ``ckpt``.
+            device: 'cuda' or 'cpu'.
 
         Loads `config.json` + `dataset_stats.json` from next to the checkpoint
         (the trainer writes both there): the first carries every architecture
         flag, the second the position normalization. We build the model to match
         and load the weights with strict=True.
         """
+        self.device = device
         self.cfg = cfg
-        self.logger = logger if logger is not None else logging.getLogger(__name__)
-        self.device = device or str(cfg.get("device", "cuda"))
         ckpt_path = cfg["ckpt"]
         ckpt_dir = os.path.dirname(ckpt_path)
 
@@ -125,17 +107,11 @@ class ICTPolicy:
         self.action_dim = self.base_action_dim + self.obj_action_dim + (1 if self.use_done_in_flow else 0)
 
         if self.action_mode != "absolute":
-            self.logger.warning(
-                "[ICTPolicy] NOTE: template decodes 'absolute' actions only; for "
-                "'delta' compose each prediction with the EE pose at re-anchor "
-                "time (InferencePolicy.py)."
-            )
+            print("[ICTPolicy] NOTE: template decodes 'absolute' actions only; for 'delta' "
+                  "compose each prediction with the EE pose at re-anchor time (InferencePolicy.py).")
         if self.use_pcd_features:
-            self.logger.warning(
-                "[ICTPolicy] NOTE: checkpoint uses PCD features but this template "
-                "feeds none (model tolerates it / runs degraded). See "
-                "InferencePolicy.prepare_pcd_input."
-            )
+            print("[ICTPolicy] NOTE: checkpoint uses PCD features but this template feeds none "
+                  "(model tolerates it / runs degraded). See InferencePolicy.prepare_pcd_input.")
 
         # ---- build to match, then load weights ----
         ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
@@ -165,15 +141,8 @@ class ICTPolicy:
 
         # Fixed noise -> deterministic action per call (resample for a stochastic policy).
         self.noise = torch.randn(1, self.pred_horizon, self.action_dim, device=device)
-        self.logger.info(
-            "[ICTPolicy] loaded %s | hands=%s ict_dim=%s frame=%s region_attn=%s steps=%s",
-            ckpt_path,
-            self.num_hands,
-            self.ict_dim,
-            self.frame_mode,
-            self.use_region_attn,
-            self.num_inference_steps,
-        )
+        print(f"[ICTPolicy] loaded {ckpt_path} | hands={self.num_hands} ict_dim={self.ict_dim} "
+              f"frame={self.frame_mode} region_attn={self.use_region_attn} steps={self.num_inference_steps}")
 
     # ================================================================
     # Geometry helpers
@@ -196,11 +165,8 @@ class ICTPolicy:
     def prepare_image(self, rgb_bgr: np.ndarray) -> torch.Tensor:
         """Clean BGR image -> (1, 3, H, W) float tensor in [0,1], RGB order."""
         h, w = self.img_size
-        if cv2 is not None:
-            img = cv2.resize(rgb_bgr, (w, h))
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        else:
-            img = np.asarray(Image.fromarray(rgb_bgr[:, :, ::-1]).resize((w, h)))
+        img = cv2.resize(rgb_bgr, (w, h))
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # training used RGB
         x = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
         return x.unsqueeze(0).to(self.device)
 
@@ -329,19 +295,26 @@ class ICTPolicy:
         else:
             done_prob = float(1.0 / (1.0 + np.exp(-out["done_logit"][0, 0].cpu().item())))
 
-        def sig(z):
-            return 1.0 / (1.0 + np.exp(-z))
-
         # hand sub-vector is always the FIRST base_action_dim entries (object-dynamics,
         # if present, sit after it and are ignored here).
+        # Grasp is a direct flow target in [0, 1] (the dataloader binarizes it
+        # before training), not a logit.  Applying sigmoid here maps an open
+        # target of 0 to 0.5, making the controller's ``> 0.5`` threshold
+        # sensitive to tiny flow integration errors.
         traj: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
         if self.single_hand:
-            traj[self.single_hand_side] = (a[:, 0:3], a[:, 3:9], sig(a[:, 9:10]))
+            traj[self.single_hand_side] = (
+                a[:, 0:3], a[:, 3:9], np.clip(a[:, 9:10], 0.0, 1.0)
+            )
         else:
             # dual-hand layout (grouped, NOT interleaved):
             #   [L_pos 0:3 | R_pos 3:6 | L_o6d 6:12 | R_o6d 12:18 | L_g 18 | R_g 19]
-            traj["left"] = (a[:, 0:3], a[:, 6:12], sig(a[:, 18:19]))
-            traj["right"] = (a[:, 3:6], a[:, 12:18], sig(a[:, 19:20]))
+            traj["left"] = (
+                a[:, 0:3], a[:, 6:12], np.clip(a[:, 18:19], 0.0, 1.0)
+            )
+            traj["right"] = (
+                a[:, 3:6], a[:, 12:18], np.clip(a[:, 19:20], 0.0, 1.0)
+            )
         return traj, done_prob
 
     # ================================================================

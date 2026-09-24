@@ -5,7 +5,7 @@ TrajectoryController — the execution side of HumanEgo inference (reference tem
 
 The policy predicts a short FUTURE trajectory of end-effector poses; this class
 turns that trajectory into smooth, rate-limited robot motion. It is the clean,
-synchronous distillation of inference/InferenceController.py (which additionally
+synchronous distillation of the production deployment controller (which additionally
 runs asynchronously and temporally-ensembles overlapping predictions — see the
 notes at the bottom for what we left out and why).
 
@@ -26,7 +26,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 from scipy.spatial.transform import Rotation as R, Slerp
 
-from interfaces import RobotArm
+from simulation.interfaces import RobotArm
 
 
 def _slerp(R_from: np.ndarray, R_to: np.ndarray, frac: float) -> np.ndarray:
@@ -143,7 +143,7 @@ class TrajectoryController:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Left out vs. the production inference/InferenceController.py (add if you need it):
+# Left out vs. the production deployment controller (add if you need it):
 #   * Async worker thread running at a fixed control rate, decoupled from the
 #     (slower) policy inference rate — gives smoother motion at high control Hz.
 #   * Temporal ensembling: average several overlapping predictions per timestep

@@ -5,9 +5,10 @@ solve this simple, fully observable simulation.  :class:`GeometryGraspSupervisor
 therefore provides a small, deterministic fallback which uses the true MuJoCo
 object pose and the same camera-frame Cartesian interface as policy control.
 
-The module intentionally does not import the oracle script.  This keeps the
-supervisor usable from ``run_inference_sim.py`` without a script-to-script
-dependency and makes the diagnostics available to both policy and oracle runs.
+The module intentionally does not import the oracle script. This keeps the
+supervisor usable from ``simulation/run_inference_sim.py`` without a
+script-to-script dependency and makes the diagnostics available to both policy
+and oracle runs.
 """
 
 from __future__ import annotations
@@ -19,10 +20,7 @@ import mujoco
 import numpy as np
 
 if TYPE_CHECKING:  # pragma: no cover - imports are only for editor/type support
-    try:
-        from .interface_sim import SimCamera, SimRobotArm, SimWorld
-    except ImportError:  # running with ``inference/`` directly on sys.path
-        from interface_sim import SimCamera, SimRobotArm, SimWorld
+    from simulation.interface_sim import SimCamera, SimRobotArm, SimWorld
 
 
 @dataclass(frozen=True)

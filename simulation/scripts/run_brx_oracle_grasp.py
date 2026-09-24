@@ -11,10 +11,10 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "inference"))
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "simulation" / "scripts"))
 
-from interface_sim import SimCamera, SimRobotArm, SimWorld  # noqa: E402
+from simulation.interface_sim import SimCamera, SimRobotArm, SimWorld  # noqa: E402
 from run_block_jamming_env import (  # noqa: E402
     BLOCK_GEOM,
     DEFAULT_XML_PATH,

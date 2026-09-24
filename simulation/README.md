@@ -1,7 +1,7 @@
 # MuJoCo Simulation Setup
 
 This folder contains the BRX20260825 MuJoCo task scene and the GlassEgo
-inference adapter.
+simulation and policy adapter.
 
 ## Target
 
@@ -45,7 +45,7 @@ This head-mounted view supplies RGB-D and clean-image policy input;
 
 ```bash
 conda run -n GlassEgo \
-  python inference/run_inference_sim.py --max-steps 100
+  python simulation/run_inference_sim.py --max-steps 100
 ```
 
 Use `--device cpu` when running in an environment without CUDA. Add
@@ -82,8 +82,7 @@ an explicitly marked simulation-only weld fallback.
 
 - Keep the BRX vendor meshes outside this repo. Do not vendor STL assets into
   GlassEgo.
-- Use this setup first to validate the MuJoCo robot/task stack. The next phase is
-  to add adapters for `inference.interfaces.Camera`, `RobotArm`, and
-  `Perception`.
+- `simulation.interfaces` defines the camera, robot, and perception boundaries;
+  `interface_sim.py` provides their MuJoCo implementations.
 - If GLFW rendering fails but model loading works, prefer `MUJOCO_GL=egl` for
   automated offscreen checks.

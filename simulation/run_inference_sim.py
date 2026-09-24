@@ -20,14 +20,19 @@ from scipy.spatial.transform import Rotation
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-for path in (HERE, ROOT):
-    if str(path) not in sys.path:
-        sys.path.insert(0, str(path))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-from controller import TrajectoryController
-from geometry_grasp import GeometryGraspSupervisor, PolicyProgressMonitor
-from interface_sim import OracleSimPerception, SimCamera, SimRobotArm, SimWorld, ViewerClosedError
-from prediction_visualization import PredictionOverlay
+from simulation.controller import TrajectoryController
+from simulation.geometry_grasp import GeometryGraspSupervisor, PolicyProgressMonitor
+from simulation.interface_sim import (
+    OracleSimPerception,
+    SimCamera,
+    SimRobotArm,
+    SimWorld,
+    ViewerClosedError,
+)
+from simulation.prediction_visualization import PredictionOverlay
 
 
 def _log(verbose: bool, message: str) -> None:
@@ -208,7 +213,7 @@ def run(
         torch.manual_seed(int(seed))
 
     selected_device = _device(device)
-    from policy import ICTPolicy
+    from simulation.policy import ICTPolicy
 
     world = SimWorld(xml_path, sim_cfg.get("width", 640), sim_cfg.get("height", 480), hide_robot_visuals=True)
     if target_position is not None:
@@ -532,7 +537,7 @@ def run(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=ROOT / "inference" / "sim_config.yaml")
+    parser.add_argument("--config", type=Path, default=HERE / "sim_config.yaml")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     display_mode = parser.add_mutually_exclusive_group()
     display_mode.add_argument(

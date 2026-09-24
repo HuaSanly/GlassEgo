@@ -103,8 +103,8 @@ $PIP install --no-deps projectaria-tools==1.7.1
 $PIP install --no-deps projectaria-client-sdk==1.1.0
 
 # 如果没有硬件（没有 robot/camera），则过滤掉这些包
-# 始终过滤掉 projectaria-tools/client-sdk （上面已使用 --no-deps 安装）
-FILTER_PATTERN="^projectaria-tools|^projectaria-client-sdk"
+# projectaria-tools 已使用 --no-deps 安装，避免被 requirements.txt 重新解析。
+FILTER_PATTERN="^projectaria-tools"
 if [ "$SKIP_HARDWARE" = "1" ]; then
     info "SKIP_HARDWARE=1 — filtering out pyrealsense2 and trossen-arm"
     FILTER_PATTERN="$FILTER_PATTERN|^pyrealsense2|^trossen-arm"
